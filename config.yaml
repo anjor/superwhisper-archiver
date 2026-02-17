@@ -1,0 +1,16 @@
+# Superwhisper Archiver Configuration
+superwhisper:
+  recordings_path: /Users/anjor/Documents/superwhisper/recordings
+
+archive:
+  repo_path: /Users/anjor/repos/anjor/superwhisper-notes
+  remote_name: origin
+  default_branch: main
+
+filters:
+  modes: ["meeting"]
+  min_duration_ms: 0
+
+logging:
+  level: INFO
+  file: /tmp/superwhisper-archiver.log
