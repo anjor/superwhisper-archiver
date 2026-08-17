@@ -20,7 +20,7 @@ def _rec(source_dir, datetime, duration, mode="Super"):
 
 
 def _grouping(**overrides):
-    defaults = {"gap_seconds": {"meeting": 1200, "super": 60}, "default_gap_seconds": 60}
+    defaults = {"gap_seconds": {"meeting": 60, "super": 60}, "default_gap_seconds": 60}
     defaults.update(overrides)
     return ArchiverConfig.GroupingConfig(**defaults)
 
@@ -104,18 +104,40 @@ def test_different_modes_never_merge():
 
 
 def test_each_mode_uses_its_own_gap():
-    """20 minutes apart: merges as Meeting, splits as Super."""
-    meeting = [
-        _rec("a", "2026-08-17T09:00:00", 10000, mode="Meeting"),
-        _rec("b", "2026-08-17T09:15:00", 10000, mode="Meeting"),
+    """A mode with a wider gap merges what a tighter one splits."""
+    grouping = _grouping(gap_seconds={"meeting": 1200, "super": 60})
+    recs = lambda mode: [  # noqa: E731
+        _rec("a", "2026-08-17T09:00:00", 10000, mode=mode),
+        _rec("b", "2026-08-17T09:15:00", 10000, mode=mode),
     ]
-    assert len(group_recordings(meeting, _grouping())) == 1
+    assert len(group_recordings(recs("Meeting"), grouping)) == 1
+    assert len(group_recordings(recs("Super"), grouping)) == 2
 
-    super_recs = [
-        _rec("a", "2026-08-17T09:00:00", 10000, mode="Super"),
-        _rec("b", "2026-08-17T09:15:00", 10000, mode="Super"),
+
+def test_back_to_back_meetings_do_not_merge():
+    """Regression: two distinct calls nine minutes apart must stay separate.
+
+    One call signed off at 10:21 and an entirely different one — different
+    person, fresh greeting — began at 10:30. A generous meeting gap merged
+    them into a single note. Real restarts within one call are seconds apart,
+    so nothing is lost by keeping the gap tight.
+    """
+    recs = [
+        _rec("1786961712", "2026-08-17T10:15:12", 350000, mode="Meeting"),
+        _rec("1786962624", "2026-08-17T10:30:24", 1082000, mode="Meeting"),
     ]
-    assert len(group_recordings(super_recs, _grouping())) == 2
+    groups = group_recordings(recs, _grouping())
+    assert [g.source_dirs for g in groups] == [["1786961712"], ["1786962624"]]
+
+
+def test_a_meeting_restarted_within_seconds_does_merge():
+    """The case a meeting gap must still catch: stop and immediately resume."""
+    recs = [
+        _rec("1771248100", "2026-02-16T13:21:40", 320, mode="Meeting"),
+        _rec("1771248104", "2026-02-16T13:21:44", 299, mode="Meeting"),
+        _rec("1771248110", "2026-02-16T13:21:50", 149, mode="Meeting"),
+    ]
+    assert len(group_recordings(recs, _grouping())) == 1
 
 
 def test_unknown_mode_falls_back_to_the_default_gap():

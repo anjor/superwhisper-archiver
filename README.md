@@ -40,10 +40,17 @@ applied to the **group total**. Without this a call split into chunks loses its
 opening minutes, because each fragment is measured against the duration floor
 on its own.
 
-Gaps are per mode because the modes need opposite things. Meetings are rare and
-never adjacent, so they take a generous gap; dictation modes need a tight one,
-or a burst of unrelated snippets adds up past the long-recording floor and
-masquerades as a meeting.
+**Keep the gaps tight.** A genuine restart within one call happens within
+seconds — the longest observed is 6s — whereas the shortest gap between two
+different back-to-back calls is over 9 minutes. A generous gap therefore buys
+no tolerance for pauses; it merges unrelated meetings, splicing one call's
+sign-off into the next one's hello. Dictation modes need a tight gap for a
+second reason: a burst of unrelated snippets otherwise adds up past the
+long-recording floor and masquerades as a meeting.
+
+The trade-off is deliberate. If a call is genuinely paused for minutes and
+resumed, it becomes two notes — which is much easier to live with than two
+people's conversations silently fused into one.
 
 A group is identified by its earliest recording, so a late arrival rewrites the
 same note in place. If regrouping does move a note, the superseded file is

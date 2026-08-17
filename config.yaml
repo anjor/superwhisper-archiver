@@ -22,11 +22,14 @@ filters:
 # for their mode are archived as one note.
 grouping:
   gap_seconds:
-    # Meetings tolerate long pauses; they are rare enough that a generous gap
-    # never fuses two distinct meetings.
-    meeting: 1200
-    # Dictation needs a tight gap, or a burst of unrelated snippets adds up
-    # past the long-recording floor and masquerades as a meeting.
+    # Keep this tight. Across all recordings, a genuine restart within one
+    # call happens within seconds (the longest observed is 6s), whereas the
+    # shortest gap between two *different* back-to-back calls is over 9
+    # minutes. A generous gap does not buy tolerance for pauses, it merges
+    # unrelated meetings — one person's sign-off into the next call's hello.
+    meeting: 60
+    # Dictation needs a tight gap too, or a burst of unrelated snippets adds
+    # up past the long-recording floor and masquerades as a meeting.
     super: 60
   default_gap_seconds: 60
 
