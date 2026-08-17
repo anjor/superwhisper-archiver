@@ -40,6 +40,17 @@ class StateTracker:
                     recordings_failed INTEGER DEFAULT 0
                 )
             """)
+            # Failures retry automatically — an unarchived recording is simply
+            # rescanned on the next run. This table exists only to count how
+            # long something has been failing, so it can be alerted on.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS failed_recordings (
+                    source_dir TEXT PRIMARY KEY,
+                    first_failed_at TEXT NOT NULL,
+                    last_error TEXT,
+                    attempts INTEGER NOT NULL DEFAULT 1
+                )
+            """)
             conn.commit()
 
     def is_archived(self, source_dir: str) -> bool:
@@ -50,6 +61,13 @@ class StateTracker:
                 (source_dir,),
             )
             return cursor.fetchone() is not None
+
+    def get_archived_source_dirs(self) -> set:
+        """Every source_dir already archived, for cheap scan-time deduplication."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT source_dir FROM archived_recordings")
+            return {row[0] for row in cursor.fetchall()}
 
     def mark_archived(
         self,
@@ -114,6 +132,47 @@ class StateTracker:
                 ),
             )
             conn.commit()
+
+    def record_failure(self, source_dir: str, error: Optional[str] = None):
+        """Note that a recording failed to archive, incrementing its attempt count."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO failed_recordings
+                    (source_dir, first_failed_at, last_error, attempts)
+                VALUES (?, ?, ?, 1)
+                ON CONFLICT(source_dir) DO UPDATE SET
+                    last_error = excluded.last_error,
+                    attempts = failed_recordings.attempts + 1
+                """,
+                (source_dir, datetime.now().isoformat(), error),
+            )
+            conn.commit()
+
+    def clear_failure(self, source_dir: str):
+        """Forget a recording's failure history, after it archives successfully."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM failed_recordings WHERE source_dir = ?",
+                (source_dir,),
+            )
+            conn.commit()
+
+    def get_failures(self) -> list:
+        """Recordings currently failing to archive, oldest failure first."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT source_dir, first_failed_at, last_error, attempts
+                FROM failed_recordings
+                ORDER BY first_failed_at ASC
+                """
+            )
+            return [dict(row) for row in cursor.fetchall()]
 
     def get_archived_count(self) -> int:
         with sqlite3.connect(self.db_path) as conn:
