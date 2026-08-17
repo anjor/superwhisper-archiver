@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
 
-from archiver.models import ArchiverConfig, Recording
-from archiver.scanner import Scanner, is_complete, qualifies
+from archiver.models import Recording
+from archiver.scanner import Scanner, is_complete
 
 
 def _create_recording(tmp_path: Path, dir_name: str, meta: dict):
@@ -40,17 +40,6 @@ IN_PROGRESS_META = {
     "duration": 0,
     "segments": [],
 }
-
-
-def _filters(**overrides):
-    defaults = {
-        "modes": ["meeting"],
-        "min_duration_ms": 60000,
-        "long_recording_modes": ["super"],
-        "long_recording_min_duration_ms": 300000,
-    }
-    defaults.update(overrides)
-    return ArchiverConfig.FiltersConfig(**defaults)
 
 
 def _recording(**overrides):
@@ -159,73 +148,34 @@ def test_unparseable_meta_is_counted_not_raised(tmp_path):
     assert result.failed_to_parse == 1
 
 
-# --- Capture rule -------------------------------------------------------
+# The capture rule now applies to groups rather than single recordings;
+# see tests/test_grouping.py.
 
 
-def test_meeting_over_floor_qualifies():
-    assert qualifies(_recording(modeName="Meeting", duration=90000), _filters()) is True
+# --- No watermark -------------------------------------------------------
 
 
-def test_meeting_under_floor_does_not_qualify():
-    assert qualifies(_recording(modeName="Meeting", duration=320), _filters()) is False
+def test_scan_returns_archived_recordings_too(tmp_path):
+    """Dedup is per group, not per recording, so scanning must not pre-filter.
 
-
-def test_meeting_exactly_at_floor_qualifies():
-    assert qualifies(_recording(modeName="Meeting", duration=60000), _filters()) is True
-
-
-def test_long_super_recording_qualifies():
-    assert qualifies(_recording(modeName="Super", duration=655000), _filters()) is True
-
-
-def test_short_super_recording_does_not_qualify():
-    assert qualifies(_recording(modeName="Super", duration=11000), _filters()) is False
-
-
-def test_super_between_floors_does_not_qualify():
-    """A 2-minute Super dictation clears the meeting floor but not the long floor."""
-    assert qualifies(_recording(modeName="Super", duration=120000), _filters()) is False
-
-
-def test_unrelated_mode_never_qualifies():
-    assert qualifies(_recording(modeName="Default", duration=999999), _filters()) is False
-
-
-def test_mode_matching_is_case_insensitive():
-    assert qualifies(_recording(modeName="MEETING", duration=90000), _filters()) is True
-
-
-def test_scan_applies_filters(tmp_path):
-    _create_recording(tmp_path, "1", {**MEETING_META, "duration": 90000})
-    _create_recording(tmp_path, "2", {**MEETING_META, "duration": 320})
-    _create_recording(tmp_path, "3", {**MEETING_META, "modeName": "Super", "duration": 655000})
-    _create_recording(tmp_path, "4", {**MEETING_META, "modeName": "Super", "duration": 11000})
-    result = Scanner(str(tmp_path)).scan(filters=_filters())
-    assert sorted(r.source_dir for r in result.recordings) == ["1", "3"]
-    assert result.skipped_filtered == 2
-
-
-# --- Deduplication (replaces the watermark) -----------------------------
-
-
-def test_scan_skips_already_archived(tmp_path):
+    Grouping needs to see archived recordings; otherwise a recording finishing
+    next to an archived one would start a second note instead of joining it.
+    """
     _create_recording(tmp_path, "1770978710", MEETING_META)
     _create_recording(tmp_path, "1770978720", {**MEETING_META, "datetime": "2026-02-14T10:00:00"})
-    result = Scanner(str(tmp_path)).scan(skip_source_dirs={"1770978710"})
-    assert [r.source_dir for r in result.recordings] == ["1770978720"]
-    assert result.skipped_archived == 1
+    result = Scanner(str(tmp_path)).scan()
+    assert sorted(r.source_dir for r in result.recordings) == ["1770978710", "1770978720"]
 
 
 def test_old_unarchived_recording_is_still_returned(tmp_path):
     """Regression: the `since` watermark permanently dropped recordings it missed.
 
     Two of the longest February meetings were lost this way. A recording that
-    predates every previous run must still be offered for archiving as long as
-    it is not in the archived set.
+    predates every previous run must still be offered for archiving.
     """
     ancient = {**MEETING_META, "datetime": "2020-01-01T00:00:00", "duration": 4620000}
     _create_recording(tmp_path, "1771419794", ancient)
-    result = Scanner(str(tmp_path)).scan(filters=_filters())
+    result = Scanner(str(tmp_path)).scan()
     assert [r.source_dir for r in result.recordings] == ["1771419794"]
 
 

@@ -56,6 +56,45 @@ def test_write_and_commit_recovers_from_stale_lock(repo_dir):
     assert not _lock_path(repo_dir).exists(), "stale lock should be removed"
 
 
+def test_write_and_commit_removes_superseded_notes(repo_dir):
+    """A regrouped recording must not leave its old note orphaned."""
+    gm = GitManager(repo_dir)
+    gm.write_and_commit("2026/08/2026-08-17-09-33-23.md", "old", "Archive: old")
+
+    sha = gm.write_and_commit(
+        "2026/08/2026-08-17-09-30-44.md",
+        "merged",
+        "Archive: merged",
+        remove_paths={"2026/08/2026-08-17-09-33-23.md"},
+    )
+
+    assert sha
+    assert (Path(repo_dir) / "2026/08/2026-08-17-09-30-44.md").exists()
+    assert not (Path(repo_dir) / "2026/08/2026-08-17-09-33-23.md").exists()
+    tracked = gm.repo.git.ls_files().split("\n")
+    assert "2026/08/2026-08-17-09-33-23.md" not in tracked
+    assert "2026/08/2026-08-17-09-30-44.md" in tracked
+
+
+def test_write_and_commit_ignores_unknown_superseded_paths(repo_dir):
+    """Removing a note that is already gone must not fail the commit."""
+    gm = GitManager(repo_dir)
+    sha = gm.write_and_commit(
+        "2026/08/note.md", "hello", "Archive: note", remove_paths={"2026/08/missing.md"}
+    )
+    assert sha
+
+
+def test_write_and_commit_never_removes_the_note_it_just_wrote(repo_dir):
+    gm = GitManager(repo_dir)
+    gm.write_and_commit("2026/08/note.md", "v1", "Archive: v1")
+    sha = gm.write_and_commit(
+        "2026/08/note.md", "v2", "Archive: v2", remove_paths={"2026/08/note.md"}
+    )
+    assert sha
+    assert (Path(repo_dir) / "2026/08/note.md").read_text() == "v2"
+
+
 def test_write_and_commit_preserves_fresh_lock(repo_dir):
     """A recent lock may belong to a live git process; do not remove it."""
     gm = GitManager(repo_dir)

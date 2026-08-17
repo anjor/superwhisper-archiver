@@ -13,8 +13,8 @@ from rich.console import Console
 from rich.logging import RichHandler
 from rich.table import Table
 
-from .models import ArchiverConfig, ArchiveResult, ArchiveSummary
-from .scanner import Scanner
+from .models import ArchiverConfig, ArchiveResult, ArchiveSummary, RecordingGroup
+from .scanner import Scanner, group_recordings, qualifies
 from .markdown_formatter import MarkdownFormatter
 from .git_manager import GitManager
 from .notifications import notify_macos
@@ -166,58 +166,67 @@ def record_archive_outcome(
         state_tracker.record_failure(source_dir, result.error)
 
 
-def archive_recording(
-    recording,
+def archive_group(
+    group: RecordingGroup,
     formatter: MarkdownFormatter,
     git_manager: GitManager,
     state_tracker: StateTracker,
     dry_run: bool = False,
 ) -> ArchiveResult:
     logger = logging.getLogger(__name__)
+    source_dir = group.primary.source_dir
 
     try:
-        markdown = formatter.format_recording(recording)
-        file_path = formatter.compute_file_path(recording)
+        markdown = formatter.format_group(group)
+        file_path = formatter.compute_file_path(group)
 
         if dry_run:
+            parts = f" ({len(group.recordings)} recordings)" if len(group.recordings) > 1 else ""
             console.print(
-                f"[yellow]DRY RUN: Would archive {recording.source_dir} to {file_path}[/yellow]"
+                f"[yellow]DRY RUN: Would archive {source_dir}{parts} to {file_path}[/yellow]"
             )
-            return ArchiveResult(
-                success=True, source_dir=recording.source_dir, file_path=file_path
-            )
+            return ArchiveResult(success=True, source_dir=source_dir, file_path=file_path)
 
-        dt = datetime.fromisoformat(recording.datetime)
+        dt = datetime.fromisoformat(group.datetime)
+        sources = ", ".join(group.source_dirs)
         commit_message = (
-            f"Archive: {recording.modeName} recording {dt.strftime('%Y-%m-%d %H:%M')}\n\n"
-            f"Source: {recording.source_dir}\n"
-            f"Duration: {recording.duration}ms\n"
+            f"Archive: {group.modeName} recording {dt.strftime('%Y-%m-%d %H:%M')}\n\n"
+            f"Source: {sources}\n"
+            f"Duration: {group.duration}ms\n"
         )
-        commit_sha = git_manager.write_and_commit(file_path, markdown, commit_message)
+        # A recording joining an existing group moves the note to the group's
+        # earliest start; drop whatever the members were filed under before.
+        superseded = state_tracker.get_file_paths(group.source_dirs) - {file_path}
+        commit_sha = git_manager.write_and_commit(
+            file_path, markdown, commit_message, remove_paths=superseded
+        )
 
         if not commit_sha:
             raise Exception("Failed to commit recording")
 
-        state_tracker.mark_archived(
-            source_dir=recording.source_dir,
-            recording_datetime=recording.datetime,
-            mode=recording.modeName,
-            duration_ms=recording.duration,
-            file_path=file_path,
-            commit_sha=commit_sha,
-        )
+        # Every member points at the shared note, so a later recording joining
+        # this group rewrites that note rather than starting a new one.
+        for rec in group.recordings:
+            state_tracker.mark_archived(
+                source_dir=rec.source_dir,
+                recording_datetime=rec.datetime,
+                mode=rec.modeName,
+                duration_ms=rec.duration,
+                file_path=file_path,
+                commit_sha=commit_sha,
+            )
 
-        logger.info(f"Archived {recording.source_dir} to {file_path}")
+        logger.info(f"Archived {sources} to {file_path}")
         return ArchiveResult(
             success=True,
-            source_dir=recording.source_dir,
+            source_dir=source_dir,
             file_path=file_path,
             commit_sha=commit_sha,
         )
 
     except Exception as e:
-        logger.error(f"Failed to archive {recording.source_dir}: {e}", exc_info=True)
-        return ArchiveResult(success=False, source_dir=recording.source_dir, error=str(e))
+        logger.error(f"Failed to archive {source_dir}: {e}", exc_info=True)
+        return ArchiveResult(success=False, source_dir=source_dir, error=str(e))
 
 
 def run_archiver(
@@ -248,19 +257,28 @@ def run_archiver(
     # Every run scans everything. Deduplication is the archived set, never a
     # timestamp watermark: a recording that was mid-flight or that failed to
     # commit must remain visible to later runs.
-    scan = scanner.scan(
-        filters=filters,
-        since=since_date,
-        skip_source_dirs=state_tracker.get_archived_source_dirs(),
-    )
+    scan = scanner.scan(since=since_date)
 
     if scan.skipped_incomplete:
         logger.info(f"{scan.skipped_incomplete} recording(s) not yet finalised; will retry")
 
+    archived = state_tracker.get_archived_source_dirs()
+    pending = []
+    for group in group_recordings(scan.recordings, config.grouping):
+        if not qualifies(group, filters):
+            scan.skipped_filtered += 1
+            continue
+        # A group is done only when all of its recordings are; if a new one
+        # has joined an archived group, the note is rewritten to include it.
+        if all(source_dir in archived for source_dir in group.source_dirs):
+            scan.skipped_archived += 1
+            continue
+        pending.append(group)
+
     results = []
-    for rec in scan.recordings:
-        result = archive_recording(rec, formatter, git_manager, state_tracker, dry_run)
-        record_archive_outcome(state_tracker, rec.source_dir, result, dry_run)
+    for group in pending:
+        result = archive_group(group, formatter, git_manager, state_tracker, dry_run)
+        record_archive_outcome(state_tracker, group.primary.source_dir, result, dry_run)
         results.append(result)
 
     if not dry_run and any(r.success for r in results):
@@ -271,14 +289,14 @@ def run_archiver(
 
     if not dry_run:
         state_tracker.update_last_run(
-            recordings_processed=len(scan.recordings),
+            recordings_processed=len(pending),
             recordings_archived=archived_count,
             recordings_failed=failed_count,
         )
         maybe_alert_failures(state_tracker)
 
     summary = ArchiveSummary(
-        total_recordings=len(scan.recordings),
+        total_recordings=len(pending),
         archived_count=archived_count,
         failed_count=failed_count,
         skipped_count=scan.skipped_archived,
