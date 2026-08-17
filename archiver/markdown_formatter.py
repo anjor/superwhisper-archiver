@@ -36,6 +36,9 @@ class MarkdownFormatter:
             f'app_version: "{rec.appVersion}"',
         ])
 
+        if group.speaker_count:
+            parts.append(f"speaker_count: {group.speaker_count}")
+
         if len(group.recordings) == 1:
             parts.append(f'source_dir: "{rec.source_dir}"')
         else:
@@ -70,6 +73,10 @@ class MarkdownFormatter:
         if summary:
             parts.append(f"## Summary\n\n{summary}\n")
 
+        conversation = self._build_conversation(group)
+        if conversation:
+            parts.append(f"## Conversation\n\n{conversation}\n")
+
         segments = self._build_segments(group)
         if segments:
             parts.append(f"## Segments\n\n{segments}\n")
@@ -96,6 +103,58 @@ class MarkdownFormatter:
                 blocks.append(text)
         return "\n\n".join(blocks)
 
+    def _build_conversation(self, group: RecordingGroup) -> str:
+        """A speaker-attributed reading of the transcript.
+
+        Only produced for diarized recordings. Consecutive segments from the
+        same speaker are joined into one turn, which reads far better than a
+        line per segment.
+        """
+        diarized = group.diarized_recordings
+        if not diarized:
+            return ""
+
+        blocks = []
+        if len(diarized) > 1:
+            blocks.append(
+                "*Speaker numbering restarts with each part — "
+                "Speaker 0 in one part is not necessarily Speaker 0 in another.*"
+            )
+
+        for rec in diarized:
+            if len(diarized) > 1:
+                index = group.recordings.index(rec) + 1
+                blocks.append(f"### Part {index}")
+            offset = self._offset_seconds(group, rec)
+            blocks.extend(self._build_turns(rec, offset))
+
+        return "\n\n".join(blocks)
+
+    def _build_turns(self, recording: Recording, offset: float) -> list:
+        """Merge each speaker's consecutive segments into a single turn."""
+        turns = []
+        current_speaker = None
+        texts = []
+        started_at = 0.0
+
+        def flush():
+            if texts:
+                stamp = self._format_timestamp(started_at + offset)
+                turns.append(f"**Speaker {current_speaker}** — {stamp}\n\n{' '.join(texts)}")
+
+        for seg in recording.segments:
+            if seg.speaker is None:
+                continue
+            if seg.speaker != current_speaker:
+                flush()
+                current_speaker = seg.speaker
+                texts = []
+                started_at = seg.start
+            texts.append(seg.text.strip())
+        flush()
+
+        return turns
+
     def _build_segments(self, group: RecordingGroup) -> str:
         """Segment timings, shifted so they run continuously across parts.
 
@@ -108,7 +167,8 @@ class MarkdownFormatter:
             for seg in rec.segments:
                 start = self._format_timestamp(seg.start + offset)
                 end = self._format_timestamp(seg.end + offset)
-                lines.append(f"- [{start} → {end}] {seg.text}")
+                speaker = f"**Speaker {seg.speaker}:** " if seg.speaker is not None else ""
+                lines.append(f"- [{start} → {end}] {speaker}{seg.text}")
         return "\n".join(lines)
 
     @staticmethod
