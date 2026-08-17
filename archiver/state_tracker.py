@@ -133,6 +133,25 @@ class StateTracker:
             )
             conn.commit()
 
+    def get_file_paths(self, source_dirs) -> set:
+        """The notes these recordings were last archived to.
+
+        Used to find a note that a regrouped recording has outgrown, so the
+        superseded file can be removed instead of orphaned.
+        """
+        source_dirs = list(source_dirs)
+        if not source_dirs:
+            return set()
+        placeholders = ",".join("?" * len(source_dirs))
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"SELECT DISTINCT file_path FROM archived_recordings "
+                f"WHERE source_dir IN ({placeholders})",
+                source_dirs,
+            )
+            return {row[0] for row in cursor.fetchall() if row[0]}
+
     def record_failure(self, source_dir: str, error: Optional[str] = None):
         """Note that a recording failed to archive, incrementing its attempt count."""
         with sqlite3.connect(self.db_path) as conn:

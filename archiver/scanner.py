@@ -2,11 +2,12 @@
 
 import json
 import logging
-from datetime import datetime
+from collections import defaultdict
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Iterable, List, Optional, Set
+from typing import Dict, List, Optional
 
-from .models import ArchiverConfig, Recording, ScanResult
+from .models import ArchiverConfig, Recording, RecordingGroup, ScanResult
 
 logger = logging.getLogger(__name__)
 
@@ -27,19 +28,61 @@ def is_complete(recording: Recording) -> bool:
     return bool(recording.segments)
 
 
-def qualifies(recording: Recording, filters: ArchiverConfig.FiltersConfig) -> bool:
-    """Whether a finished recording is a meeting worth archiving.
+def group_recordings(
+    recordings: List[Recording],
+    grouping: ArchiverConfig.GroupingConfig,
+) -> List[RecordingGroup]:
+    """Collect recordings that belong to the same conversation.
+
+    Recordings are grouped within a mode only, and split wherever the silence
+    between one ending and the next starting exceeds that mode's gap. Ordering
+    within a group, and of the groups themselves, is by start time.
+    """
+    by_mode: Dict[str, List[Recording]] = defaultdict(list)
+    for recording in recordings:
+        by_mode[recording.modeName.lower()].append(recording)
+
+    groups: List[RecordingGroup] = []
+
+    for mode, mode_recordings in by_mode.items():
+        gap = timedelta(seconds=grouping.gap_for(mode))
+        mode_recordings.sort(key=lambda r: r.datetime)
+
+        current: List[Recording] = []
+        for recording in mode_recordings:
+            if current:
+                previous = current[-1]
+                previous_end = datetime.fromisoformat(previous.datetime) + timedelta(
+                    milliseconds=previous.duration
+                )
+                if datetime.fromisoformat(recording.datetime) - previous_end > gap:
+                    groups.append(RecordingGroup(recordings=current))
+                    current = []
+            current.append(recording)
+
+        if current:
+            groups.append(RecordingGroup(recordings=current))
+
+    groups.sort(key=lambda g: g.datetime)
+    return groups
+
+
+def qualifies(group: RecordingGroup, filters: ArchiverConfig.FiltersConfig) -> bool:
+    """Whether a group of recordings is a meeting worth archiving.
+
+    Duration is the group total, so a conversation split into chunks is judged
+    as the conversation it is rather than as its individual fragments.
 
     See ``ArchiverConfig.FiltersConfig`` for the two rules.
     """
-    mode = recording.modeName.lower()
+    mode = group.modeName.lower()
 
     if mode in {m.lower() for m in filters.modes}:
-        if recording.duration >= filters.min_duration_ms:
+        if group.duration >= filters.min_duration_ms:
             return True
 
     if mode in {m.lower() for m in filters.long_recording_modes}:
-        if recording.duration >= filters.long_recording_min_duration_ms:
+        if group.duration >= filters.long_recording_min_duration_ms:
             return True
 
     return False
@@ -51,29 +94,26 @@ class Scanner:
     def __init__(self, recordings_path: str):
         self.recordings_path = Path(recordings_path)
 
-    def scan(
-        self,
-        filters: Optional[ArchiverConfig.FiltersConfig] = None,
-        since: Optional[str] = None,
-        skip_source_dirs: Optional[Iterable[str]] = None,
-    ) -> ScanResult:
-        """Find recordings that are ready to be archived.
+    def scan(self, since: Optional[str] = None) -> ScanResult:
+        """Find every finished recording on disk.
 
-        The whole directory is scanned every time. There is deliberately no
-        "only look at recordings newer than the last run" watermark: a
-        recording that is mid-flight, or that failed to archive, must stay
-        visible to later runs. Deduplication is ``skip_source_dirs`` alone.
+        The whole directory is scanned every time, and archived recordings are
+        deliberately *not* excluded here — grouping needs to see them, so that
+        a recording finishing next to an already-archived one extends that
+        note instead of starting a second one. Deduplication happens per
+        group, once the groups are known.
+
+        There is equally no "only look at recordings newer than the last run"
+        watermark: a recording that is mid-flight, or that failed to archive,
+        must stay visible to later runs.
 
         Args:
-            filters: Capture rule. None means accept every finished recording.
             since: Optional manual floor on recording datetime (ISO string).
-            skip_source_dirs: Directory names that are already archived.
 
         Returns:
             A ScanResult whose recordings are sorted by datetime ascending.
         """
         result = ScanResult()
-        already_archived: Set[str] = set(skip_source_dirs or ())
 
         if not self.recordings_path.exists():
             logger.warning(f"Recordings path does not exist: {self.recordings_path}")
@@ -83,12 +123,6 @@ class Scanner:
 
         for entry in self.recordings_path.iterdir():
             if not entry.is_dir():
-                continue
-
-            # Cheapest check first: skip reading meta.json entirely for
-            # recordings that have already been archived.
-            if entry.name in already_archived:
-                result.skipped_archived += 1
                 continue
 
             meta_path = entry / "meta.json"
@@ -107,10 +141,6 @@ class Scanner:
             if not is_complete(recording):
                 logger.debug(f"Skipping {entry.name}: still recording or not yet finalised")
                 result.skipped_incomplete += 1
-                continue
-
-            if filters is not None and not qualifies(recording, filters):
-                result.skipped_filtered += 1
                 continue
 
             recordings.append(recording)

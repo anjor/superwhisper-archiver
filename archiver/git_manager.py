@@ -44,39 +44,68 @@ class GitManager:
         except GitCommandError as e:
             logger.warning(f"Failed to update repository: {e}")
 
-    def write_and_commit(self, file_path: str, content: str, commit_message: str) -> Optional[str]:
+    def write_and_commit(
+        self,
+        file_path: str,
+        content: str,
+        commit_message: str,
+        remove_paths=None,
+    ) -> Optional[str]:
+        """Write a note and commit it, optionally deleting notes it supersedes.
+
+        Args:
+            file_path: Relative path of the note to write.
+            content: Note content.
+            commit_message: Git commit message.
+            remove_paths: Relative paths of notes this one replaces, deleted in
+                the same commit so a regrouped recording leaves no orphan.
+        """
         try:
             full_path = self.repo_path / file_path
             full_path.parent.mkdir(parents=True, exist_ok=True)
             full_path.write_text(content, encoding="utf-8")
             logger.info(f"Wrote file: {file_path}")
 
+            removed = []
+            for stale in remove_paths or ():
+                stale_path = self.repo_path / stale
+                if stale == file_path or not stale_path.exists():
+                    continue
+                stale_path.unlink()
+                removed.append(stale)
+                logger.info(f"Removed superseded note: {stale}")
+
             # Write succeeded; staging + committing may hit a stale lock.
-            return self._stage_and_commit(file_path, commit_message)
+            return self._stage_and_commit(file_path, commit_message, removed)
         except Exception as e:
             logger.error(f"Failed to write and commit {file_path}: {e}")
             return None
 
-    def _stage_and_commit(self, file_path: str, commit_message: str) -> Optional[str]:
+    def _stage_and_commit(
+        self, file_path: str, commit_message: str, removed_paths=None
+    ) -> Optional[str]:
         """Stage and commit a written file, recovering from a stale index.lock.
 
         If the commit fails and a *stale* lock is present, the lock is removed
         and the commit is retried once. A fresh lock is left untouched, since it
         may belong to a live git process.
         """
+        removed_paths = list(removed_paths or ())
         try:
-            self.repo.index.add([file_path])
-            commit = self.repo.index.commit(commit_message)
-            logger.info(f"Committed {file_path} with SHA {commit.hexsha[:8]}")
-            return commit.hexsha
+            return self._do_commit(file_path, commit_message, removed_paths)
         except Exception as e:
             if not self._clear_stale_lock():
                 raise
             logger.warning(f"Cleared stale git lock; retrying commit of {file_path} (was: {e})")
-            self.repo.index.add([file_path])
-            commit = self.repo.index.commit(commit_message)
-            logger.info(f"Committed {file_path} with SHA {commit.hexsha[:8]}")
-            return commit.hexsha
+            return self._do_commit(file_path, commit_message, removed_paths)
+
+    def _do_commit(self, file_path: str, commit_message: str, removed_paths) -> str:
+        self.repo.index.add([file_path])
+        if removed_paths:
+            self.repo.index.remove(removed_paths, working_tree=False, r=True)
+        commit = self.repo.index.commit(commit_message)
+        logger.info(f"Committed {file_path} with SHA {commit.hexsha[:8]}")
+        return commit.hexsha
 
     def _clear_stale_lock(self) -> bool:
         """Remove the repo's index.lock if it is stale.

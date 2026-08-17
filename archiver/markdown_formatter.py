@@ -3,7 +3,7 @@
 from datetime import datetime
 import logging
 
-from .models import Recording
+from .models import Recording, RecordingGroup
 
 logger = logging.getLogger(__name__)
 
@@ -11,25 +11,21 @@ logger = logging.getLogger(__name__)
 class MarkdownFormatter:
     """Formats superwhisper recordings as Markdown with YAML frontmatter."""
 
-    def format_recording(self, recording: Recording) -> str:
-        """Format a recording as Markdown.
+    def format_group(self, group: RecordingGroup) -> str:
+        """Format a group of recordings as a single Markdown note.
 
-        Args:
-            recording: The Recording to format.
-
-        Returns:
-            Formatted Markdown string.
+        A group of one renders exactly as a lone recording always did, so
+        notes written before grouping existed stay comparable.
         """
-        frontmatter = self._build_frontmatter(recording)
-        body = self._build_body(recording)
-        return frontmatter + body
+        return self._build_frontmatter(group) + self._build_body(group)
 
-    def _build_frontmatter(self, rec: Recording) -> str:
+    def _build_frontmatter(self, group: RecordingGroup) -> str:
+        rec = group.primary
         parts = [
             "---",
-            f'datetime: "{rec.datetime}"',
-            f"mode: {rec.modeName}",
-            f"duration_ms: {rec.duration}",
+            f'datetime: "{group.datetime}"',
+            f"mode: {group.modeName}",
+            f"duration_ms: {group.duration}",
             f'model: "{rec.modelName}"',
         ]
         if rec.languageModelName:
@@ -38,51 +34,99 @@ class MarkdownFormatter:
             f"language: {rec.languageSelected}",
             f"system_audio: {str(rec.systemAudioEnabled).lower()}",
             f'app_version: "{rec.appVersion}"',
-            f'source_dir: "{rec.source_dir}"',
+        ])
+
+        if len(group.recordings) == 1:
+            parts.append(f'source_dir: "{rec.source_dir}"')
+        else:
+            parts.append(f"recording_count: {len(group.recordings)}")
+            parts.append("source_dirs:")
+            parts.extend(f'  - "{source_dir}"' for source_dir in group.source_dirs)
+
+        parts.extend([
             f'archived_at: "{datetime.now().isoformat()}"',
             "---",
         ])
         return "\n".join(parts) + "\n"
 
-    def _build_body(self, rec: Recording) -> str:
-        dt = datetime.fromisoformat(rec.datetime)
-        duration_str = self._format_duration(rec.duration)
+    def _build_body(self, group: RecordingGroup) -> str:
+        start = datetime.fromisoformat(group.datetime)
+        duration_str = self._format_duration(group.duration)
 
         parts = [
-            f"\n# Recording — {dt.strftime('%Y-%m-%d %H:%M')}\n",
-            f"**Mode**: {rec.modeName} | **Duration**: {duration_str}\n",
+            f"\n# Recording — {start.strftime('%Y-%m-%d %H:%M')}\n",
+            f"**Mode**: {group.modeName} | **Duration**: {duration_str}\n",
         ]
+        if len(group.recordings) > 1:
+            parts.append(
+                f"*Assembled from {len(group.recordings)} consecutive recordings.*\n"
+            )
 
-        # Transcription
-        transcription = rec.result.strip() if rec.result else rec.rawResult.strip()
+        transcription = self._build_transcription(group)
         if transcription:
             parts.append(f"## Transcription\n\n{transcription}\n")
 
-        # LLM Summary (if present)
-        if rec.llmResult:
-            parts.append(f"## Summary\n\n{rec.llmResult}\n")
+        summary = "\n\n".join(r.llmResult.strip() for r in group.recordings if r.llmResult)
+        if summary:
+            parts.append(f"## Summary\n\n{summary}\n")
 
-        # Segments
-        if rec.segments:
-            lines = []
-            for seg in rec.segments:
-                start = self._format_timestamp(seg.start)
-                end = self._format_timestamp(seg.end)
-                lines.append(f"- [{start} → {end}] {seg.text}")
-            parts.append("## Segments\n\n" + "\n".join(lines) + "\n")
+        segments = self._build_segments(group)
+        if segments:
+            parts.append(f"## Segments\n\n{segments}\n")
 
-        # Footer
         parts.append(f"\n---\n*Archived: {datetime.now().strftime('%Y-%m-%d')}*\n")
 
         return "\n".join(parts)
 
-    def compute_file_path(self, recording: Recording) -> str:
-        """Compute the archive file path for a recording.
+    def _build_transcription(self, group: RecordingGroup) -> str:
+        """Concatenate each part's transcript, in order.
+
+        Parts are labelled when there is more than one, so a reader can tell a
+        gap in the conversation from a pause in it.
+        """
+        blocks = []
+        for index, rec in enumerate(group.recordings, start=1):
+            text = (rec.result or rec.rawResult or "").strip()
+            if not text:
+                continue
+            if len(group.recordings) > 1:
+                offset = self._format_timestamp(self._offset_seconds(group, rec))
+                blocks.append(f"### Part {index} — {offset}\n\n{text}")
+            else:
+                blocks.append(text)
+        return "\n\n".join(blocks)
+
+    def _build_segments(self, group: RecordingGroup) -> str:
+        """Segment timings, shifted so they run continuously across parts.
+
+        Each recording times its segments from its own start, so every part
+        after the first is offset by its distance from the group's start.
+        """
+        lines = []
+        for rec in group.recordings:
+            offset = self._offset_seconds(group, rec)
+            for seg in rec.segments:
+                start = self._format_timestamp(seg.start + offset)
+                end = self._format_timestamp(seg.end + offset)
+                lines.append(f"- [{start} → {end}] {seg.text}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _offset_seconds(group: RecordingGroup, recording: Recording) -> float:
+        """How far into the group this recording starts, in seconds."""
+        group_start = datetime.fromisoformat(group.datetime)
+        return (datetime.fromisoformat(recording.datetime) - group_start).total_seconds()
+
+    def compute_file_path(self, group: RecordingGroup) -> str:
+        """Compute the archive file path for a group.
+
+        Derived from the earliest recording, so that a later recording joining
+        the group rewrites the same note rather than creating a second one.
 
         Returns:
             Relative path like YYYY/MM/YYYY-MM-DD-HH-MM-SS.md
         """
-        dt = datetime.fromisoformat(recording.datetime)
+        dt = datetime.fromisoformat(group.datetime)
         year = dt.strftime("%Y")
         month = dt.strftime("%m")
         filename = dt.strftime("%Y-%m-%d-%H-%M-%S") + ".md"

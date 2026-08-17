@@ -58,6 +58,26 @@ def test_get_archived_source_dirs_returns_all(tmp_path):
     assert tracker.get_archived_source_dirs() == {"dir1", "dir2"}
 
 
+def test_get_file_paths_is_empty_for_unknown(tmp_path):
+    tracker = StateTracker(str(tmp_path / "test.db"))
+    assert tracker.get_file_paths(["nope"]) == set()
+
+
+def test_get_file_paths_is_empty_for_no_input(tmp_path):
+    tracker = StateTracker(str(tmp_path / "test.db"))
+    assert tracker.get_file_paths([]) == set()
+
+
+def test_get_file_paths_collapses_shared_notes(tmp_path):
+    """Grouped recordings share one note, so their paths deduplicate."""
+    tracker = StateTracker(str(tmp_path / "test.db"))
+    tracker.mark_archived("dir1", "2026-02-13T10:00:00", "Super", 5000, "2026/02/a.md", "sha1")
+    tracker.mark_archived("dir2", "2026-02-13T10:01:00", "Super", 6000, "2026/02/a.md", "sha1")
+    tracker.mark_archived("dir3", "2026-02-13T11:00:00", "Super", 6000, "2026/02/b.md", "sha2")
+    assert tracker.get_file_paths(["dir1", "dir2"]) == {"2026/02/a.md"}
+    assert tracker.get_file_paths(["dir1", "dir3"]) == {"2026/02/a.md", "2026/02/b.md"}
+
+
 # --- Failure tracking ---------------------------------------------------
 
 

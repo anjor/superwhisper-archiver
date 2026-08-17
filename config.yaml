@@ -17,6 +17,19 @@ filters:
   long_recording_modes: ["super"]
   long_recording_min_duration_ms: 300000
 
+# A call is often captured as several recordings, because stopping and
+# restarting starts a new directory. Recordings closer together than the gap
+# for their mode are archived as one note.
+grouping:
+  gap_seconds:
+    # Meetings tolerate long pauses; they are rare enough that a generous gap
+    # never fuses two distinct meetings.
+    meeting: 1200
+    # Dictation needs a tight gap, or a burst of unrelated snippets adds up
+    # past the long-recording floor and masquerades as a meeting.
+    super: 60
+  default_gap_seconds: 60
+
 logging:
   level: INFO
   file: /tmp/superwhisper-archiver.log

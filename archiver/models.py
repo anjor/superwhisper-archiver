@@ -1,6 +1,6 @@
 """Pydantic models for the superwhisper archiver."""
 
-from typing import Optional, List
+from typing import Dict, Optional, List
 from pydantic import BaseModel, Field
 
 
@@ -39,6 +39,42 @@ class Recording(BaseModel):
         extra = "ignore"
 
 
+class RecordingGroup(BaseModel):
+    """Recordings that together make up one conversation.
+
+    superwhisper starts a new directory every time recording is stopped and
+    restarted, so a single call routinely arrives as several recordings a few
+    seconds apart. Archiving each one separately splits a conversation across
+    notes and — because the duration floor is applied per recording — can drop
+    its opening minutes entirely. The group is the unit that gets filtered,
+    formatted and archived.
+    """
+
+    recordings: List[Recording] = Field(min_length=1)
+
+    @property
+    def primary(self) -> Recording:
+        """The earliest recording, which gives the group its identity."""
+        return self.recordings[0]
+
+    @property
+    def source_dirs(self) -> List[str]:
+        return [r.source_dir for r in self.recordings]
+
+    @property
+    def datetime(self) -> str:
+        return self.primary.datetime
+
+    @property
+    def modeName(self) -> str:
+        return self.primary.modeName
+
+    @property
+    def duration(self) -> int:
+        """Total recorded milliseconds, excluding the gaps between parts."""
+        return sum(r.duration for r in self.recordings)
+
+
 class ArchiverConfig(BaseModel):
     """Configuration for the archiver."""
 
@@ -65,6 +101,21 @@ class ArchiverConfig(BaseModel):
         long_recording_modes: List[str] = Field(default_factory=list)
         long_recording_min_duration_ms: int = 300000
 
+    class GroupingConfig(BaseModel):
+        """How close two recordings must be to count as one conversation.
+
+        The gap is measured from the end of one recording to the start of the
+        next, and is per mode: a meeting tolerates long pauses, whereas
+        dictation modes need a tight gap so that a burst of unrelated snippets
+        is not fused into a fake meeting.
+        """
+
+        gap_seconds: Dict[str, int] = Field(default_factory=dict)
+        default_gap_seconds: int = 60
+
+        def gap_for(self, mode: str) -> int:
+            return self.gap_seconds.get(mode.lower(), self.default_gap_seconds)
+
     class LoggingConfig(BaseModel):
         level: str = "INFO"
         file: str = "/tmp/superwhisper-archiver.log"
@@ -72,6 +123,7 @@ class ArchiverConfig(BaseModel):
     superwhisper: SuperwhisperConfig
     archive: ArchiveConfig
     filters: FiltersConfig
+    grouping: GroupingConfig = Field(default_factory=lambda: ArchiverConfig.GroupingConfig())
     logging: LoggingConfig
 
 
