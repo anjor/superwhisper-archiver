@@ -8,6 +8,11 @@ class Segment(BaseModel):
     text: str
     start: float
     end: float
+    # Present only when the recording's mode has diarization enabled. Speaker
+    # ids are 0-based and assigned per recording, so the same id in two
+    # recordings is not necessarily the same person.
+    speaker: Optional[int] = None
+    confidence: Optional[float] = None
 
 
 class Recording(BaseModel):
@@ -73,6 +78,22 @@ class RecordingGroup(BaseModel):
     def duration(self) -> int:
         """Total recorded milliseconds, excluding the gaps between parts."""
         return sum(r.duration for r in self.recordings)
+
+    @property
+    def diarized_recordings(self) -> List[Recording]:
+        return [r for r in self.recordings if any(s.speaker is not None for s in r.segments)]
+
+    @property
+    def speaker_count(self) -> int:
+        """Speakers in the part that heard the most of them.
+
+        Not a sum: ids restart with each recording, so parts cannot be added
+        together without claiming more speakers than were present.
+        """
+        return max(
+            (len({s.speaker for s in r.segments if s.speaker is not None}) for r in self.recordings),
+            default=0,
+        )
 
 
 class ArchiverConfig(BaseModel):

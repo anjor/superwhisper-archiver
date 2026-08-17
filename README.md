@@ -86,6 +86,19 @@ group is done only when every one of its recordings is.
 
 Recording timestamps in `meta.json` are UTC and are stored as-is.
 
+## Diarization
+
+When a mode has diarization enabled, superwhisper tags each segment with a
+0-based `speaker` id. Those are rendered as a `speaker_count` in the
+frontmatter, a speaker prefix on each segment line, and a `## Conversation`
+section that merges each speaker's consecutive segments into one turn.
+
+Speaker ids are assigned **per recording**, so a grouped note cannot assume
+Speaker 0 is the same person throughout. Each part is rendered separately with
+a caveat, and `speaker_count` is the maximum across parts rather than the sum.
+
+Undiarized recordings render exactly as before.
+
 ## Failure alerting
 
 Failures are counted in `failed_recordings`. Once a recording has failed
