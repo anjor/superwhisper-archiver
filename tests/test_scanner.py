@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
 
-from archiver.scanner import Scanner
-from archiver.models import Recording
+from archiver.models import ArchiverConfig, Recording
+from archiver.scanner import Scanner, is_complete, qualifies
 
 
 def _create_recording(tmp_path: Path, dir_name: str, meta: dict):
@@ -31,51 +31,49 @@ DEFAULT_META = {
     "datetime": "2026-02-14T09:00:00",
 }
 
+# What superwhisper writes ~11s into a recording, before it finalises meta.json.
+IN_PROGRESS_META = {
+    **MEETING_META,
+    "datetime": "2026-02-20T14:00:00",
+    "result": "",
+    "rawResult": "",
+    "duration": 0,
+    "segments": [],
+}
+
+
+def _filters(**overrides):
+    defaults = {
+        "modes": ["meeting"],
+        "min_duration_ms": 60000,
+        "long_recording_modes": ["super"],
+        "long_recording_min_duration_ms": 300000,
+    }
+    defaults.update(overrides)
+    return ArchiverConfig.FiltersConfig(**defaults)
+
+
+def _recording(**overrides):
+    meta = {**MEETING_META, **overrides}
+    return Recording(source_dir="test", **meta)
+
+
+# --- Scanning -----------------------------------------------------------
+
 
 def test_scan_finds_recordings(tmp_path):
     _create_recording(tmp_path, "1770978710", MEETING_META)
     _create_recording(tmp_path, "1770978720", DEFAULT_META)
-    scanner = Scanner(str(tmp_path))
-    recordings = scanner.scan()
-    assert len(recordings) == 2
-
-
-def test_scan_filters_by_mode(tmp_path):
-    _create_recording(tmp_path, "1770978710", MEETING_META)
-    _create_recording(tmp_path, "1770978720", DEFAULT_META)
-    scanner = Scanner(str(tmp_path))
-    recordings = scanner.scan(modes=["meeting"])
-    assert len(recordings) == 1
-    assert recordings[0].modeName == "Meeting"
-
-
-def test_scan_filters_by_min_duration(tmp_path):
-    short_meta = {**MEETING_META, "duration": 100}
-    _create_recording(tmp_path, "1770978710", MEETING_META)
-    _create_recording(tmp_path, "1770978720", short_meta)
-    scanner = Scanner(str(tmp_path))
-    recordings = scanner.scan(min_duration_ms=1000)
-    assert len(recordings) == 1
-
-
-def test_scan_filters_by_since_date(tmp_path):
-    old_meta = {**MEETING_META, "datetime": "2026-02-01T10:00:00"}
-    _create_recording(tmp_path, "1770978710", MEETING_META)
-    _create_recording(tmp_path, "1770978720", old_meta)
-    scanner = Scanner(str(tmp_path))
-    recordings = scanner.scan(since="2026-02-10")
-    assert len(recordings) == 1
+    result = Scanner(str(tmp_path)).scan()
+    assert len(result.recordings) == 2
 
 
 def test_scan_skips_invalid_directories(tmp_path):
     _create_recording(tmp_path, "1770978710", MEETING_META)
-    # Create a directory without meta.json
     (tmp_path / "invalid_dir").mkdir()
-    # Create a non-directory file
     (tmp_path / "random_file.txt").write_text("hello")
-    scanner = Scanner(str(tmp_path))
-    recordings = scanner.scan()
-    assert len(recordings) == 1
+    result = Scanner(str(tmp_path)).scan()
+    assert len(result.recordings) == 1
 
 
 def test_scan_returns_sorted_by_datetime(tmp_path):
@@ -83,7 +81,157 @@ def test_scan_returns_sorted_by_datetime(tmp_path):
     late = {**MEETING_META, "datetime": "2026-02-15T18:00:00"}
     _create_recording(tmp_path, "1770978720", late)
     _create_recording(tmp_path, "1770978710", early)
+    result = Scanner(str(tmp_path)).scan()
+    assert [r.datetime for r in result.recordings] == [
+        "2026-02-10T08:00:00",
+        "2026-02-15T18:00:00",
+    ]
+
+
+def test_scan_missing_path_returns_empty(tmp_path):
+    result = Scanner(str(tmp_path / "nope")).scan()
+    assert result.recordings == []
+
+
+# --- Completeness gate --------------------------------------------------
+
+
+def test_in_progress_recording_is_not_complete():
+    assert is_complete(_recording(**IN_PROGRESS_META)) is False
+
+
+def test_finished_recording_is_complete():
+    assert is_complete(_recording()) is True
+
+
+def test_recording_with_only_segments_is_complete():
+    assert is_complete(_recording(result="", rawResult="")) is True
+
+
+def test_zero_duration_is_never_complete():
+    assert is_complete(_recording(duration=0)) is False
+
+
+def test_whitespace_only_transcript_without_segments_is_not_complete():
+    assert is_complete(_recording(result="  ", rawResult="\n", segments=[])) is False
+
+
+def test_scan_skips_in_progress_recordings(tmp_path):
+    _create_recording(tmp_path, "1770978710", MEETING_META)
+    _create_recording(tmp_path, "1780000000", IN_PROGRESS_META)
+    result = Scanner(str(tmp_path)).scan()
+    assert [r.source_dir for r in result.recordings] == ["1770978710"]
+    assert result.skipped_incomplete == 1
+
+
+def test_in_progress_recording_is_picked_up_once_finalised(tmp_path):
+    """The placeholder is skipped, then archived on a later run once rewritten.
+
+    This is the behaviour the `since` watermark used to make impossible.
+    """
+    _create_recording(tmp_path, "1780000000", IN_PROGRESS_META)
     scanner = Scanner(str(tmp_path))
-    recordings = scanner.scan()
-    assert recordings[0].datetime == "2026-02-10T08:00:00"
-    assert recordings[1].datetime == "2026-02-15T18:00:00"
+    assert scanner.scan().recordings == []
+
+    # superwhisper rewrites meta.json in place when the recording finishes.
+    finalised = {**IN_PROGRESS_META, "duration": 1689000, "result": "the real transcript"}
+    (tmp_path / "1780000000" / "meta.json").write_text(json.dumps(finalised))
+
+    result = scanner.scan()
+    assert [r.source_dir for r in result.recordings] == ["1780000000"]
+
+
+def test_placeholder_meta_parses_instead_of_raising(tmp_path):
+    """A partial meta.json must not blow up Pydantic validation."""
+    _create_recording(tmp_path, "1780000000", {"datetime": "2026-02-20T14:00:00"})
+    result = Scanner(str(tmp_path)).scan()
+    assert result.recordings == []
+    assert result.skipped_incomplete == 1
+    assert result.failed_to_parse == 0
+
+
+def test_unparseable_meta_is_counted_not_raised(tmp_path):
+    rec_dir = tmp_path / "1780000000"
+    rec_dir.mkdir()
+    (rec_dir / "meta.json").write_text("{not json")
+    result = Scanner(str(tmp_path)).scan()
+    assert result.recordings == []
+    assert result.failed_to_parse == 1
+
+
+# --- Capture rule -------------------------------------------------------
+
+
+def test_meeting_over_floor_qualifies():
+    assert qualifies(_recording(modeName="Meeting", duration=90000), _filters()) is True
+
+
+def test_meeting_under_floor_does_not_qualify():
+    assert qualifies(_recording(modeName="Meeting", duration=320), _filters()) is False
+
+
+def test_meeting_exactly_at_floor_qualifies():
+    assert qualifies(_recording(modeName="Meeting", duration=60000), _filters()) is True
+
+
+def test_long_super_recording_qualifies():
+    assert qualifies(_recording(modeName="Super", duration=655000), _filters()) is True
+
+
+def test_short_super_recording_does_not_qualify():
+    assert qualifies(_recording(modeName="Super", duration=11000), _filters()) is False
+
+
+def test_super_between_floors_does_not_qualify():
+    """A 2-minute Super dictation clears the meeting floor but not the long floor."""
+    assert qualifies(_recording(modeName="Super", duration=120000), _filters()) is False
+
+
+def test_unrelated_mode_never_qualifies():
+    assert qualifies(_recording(modeName="Default", duration=999999), _filters()) is False
+
+
+def test_mode_matching_is_case_insensitive():
+    assert qualifies(_recording(modeName="MEETING", duration=90000), _filters()) is True
+
+
+def test_scan_applies_filters(tmp_path):
+    _create_recording(tmp_path, "1", {**MEETING_META, "duration": 90000})
+    _create_recording(tmp_path, "2", {**MEETING_META, "duration": 320})
+    _create_recording(tmp_path, "3", {**MEETING_META, "modeName": "Super", "duration": 655000})
+    _create_recording(tmp_path, "4", {**MEETING_META, "modeName": "Super", "duration": 11000})
+    result = Scanner(str(tmp_path)).scan(filters=_filters())
+    assert sorted(r.source_dir for r in result.recordings) == ["1", "3"]
+    assert result.skipped_filtered == 2
+
+
+# --- Deduplication (replaces the watermark) -----------------------------
+
+
+def test_scan_skips_already_archived(tmp_path):
+    _create_recording(tmp_path, "1770978710", MEETING_META)
+    _create_recording(tmp_path, "1770978720", {**MEETING_META, "datetime": "2026-02-14T10:00:00"})
+    result = Scanner(str(tmp_path)).scan(skip_source_dirs={"1770978710"})
+    assert [r.source_dir for r in result.recordings] == ["1770978720"]
+    assert result.skipped_archived == 1
+
+
+def test_old_unarchived_recording_is_still_returned(tmp_path):
+    """Regression: the `since` watermark permanently dropped recordings it missed.
+
+    Two of the longest February meetings were lost this way. A recording that
+    predates every previous run must still be offered for archiving as long as
+    it is not in the archived set.
+    """
+    ancient = {**MEETING_META, "datetime": "2020-01-01T00:00:00", "duration": 4620000}
+    _create_recording(tmp_path, "1771419794", ancient)
+    result = Scanner(str(tmp_path)).scan(filters=_filters())
+    assert [r.source_dir for r in result.recordings] == ["1771419794"]
+
+
+def test_since_is_available_as_an_explicit_filter(tmp_path):
+    old_meta = {**MEETING_META, "datetime": "2026-02-01T10:00:00"}
+    _create_recording(tmp_path, "1770978710", MEETING_META)
+    _create_recording(tmp_path, "1770978720", old_meta)
+    result = Scanner(str(tmp_path)).scan(since="2026-02-10")
+    assert [r.source_dir for r in result.recordings] == ["1770978710"]

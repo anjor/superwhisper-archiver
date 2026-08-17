@@ -11,19 +11,27 @@ class Segment(BaseModel):
 
 
 class Recording(BaseModel):
-    """A parsed superwhisper recording from meta.json."""
+    """A parsed superwhisper recording from meta.json.
+
+    Every field except ``source_dir`` is optional. superwhisper creates the
+    recording directory and writes a *placeholder* meta.json a few seconds into
+    a recording, only rewriting it in place once the recording finishes. That
+    placeholder is missing most fields, so a strict model would raise and the
+    recording would be skipped as unparseable. Defaults let it parse, and
+    ``scanner.is_complete`` decides whether it is finished yet.
+    """
 
     source_dir: str
-    datetime: str
-    result: str
-    rawResult: str
-    duration: int  # milliseconds
-    segments: List[Segment]
-    modeName: str
-    modelName: str
-    languageSelected: str
-    systemAudioEnabled: bool
-    appVersion: str
+    datetime: str = ""
+    result: str = ""
+    rawResult: str = ""
+    duration: int = 0  # milliseconds
+    segments: List[Segment] = Field(default_factory=list)
+    modeName: str = ""
+    modelName: str = ""
+    languageSelected: str = ""
+    systemAudioEnabled: bool = False
+    appVersion: str = ""
     languageModelName: Optional[str] = None
     llmResult: Optional[str] = None
 
@@ -43,8 +51,19 @@ class ArchiverConfig(BaseModel):
         default_branch: str = "main"
 
     class FiltersConfig(BaseModel):
+        """Which recordings count as a meeting worth archiving.
+
+        Two independent rules, either of which admits a recording:
+        a mode in ``modes`` lasting at least ``min_duration_ms``, or a mode in
+        ``long_recording_modes`` lasting at least
+        ``long_recording_min_duration_ms``. The second rule catches long
+        mic-only conversations recorded in a dictation mode.
+        """
+
         modes: List[str] = Field(default_factory=lambda: ["meeting"])
-        min_duration_ms: int = 0
+        min_duration_ms: int = 60000
+        long_recording_modes: List[str] = Field(default_factory=list)
+        long_recording_min_duration_ms: int = 300000
 
     class LoggingConfig(BaseModel):
         level: str = "INFO"
@@ -54,6 +73,16 @@ class ArchiverConfig(BaseModel):
     archive: ArchiveConfig
     filters: FiltersConfig
     logging: LoggingConfig
+
+
+class ScanResult(BaseModel):
+    """Recordings eligible for archiving, plus why the rest were passed over."""
+
+    recordings: List[Recording] = Field(default_factory=list)
+    skipped_archived: int = 0
+    skipped_incomplete: int = 0
+    skipped_filtered: int = 0
+    failed_to_parse: int = 0
 
 
 class ArchiveResult(BaseModel):
