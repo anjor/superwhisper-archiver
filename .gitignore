@@ -5,3 +5,6 @@ __pycache__/
 *.egg-info/
 dist/
 logs/
+
+# swhelper is built from source by swhelper/build.sh
+swhelper/swhelper
