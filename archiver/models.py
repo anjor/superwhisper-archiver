@@ -39,9 +39,25 @@ class Recording(BaseModel):
     appVersion: str = ""
     languageModelName: Optional[str] = None
     llmResult: Optional[str] = None
+    # Last-modified time of meta.json, filled in by the scanner rather than
+    # read from the file. superwhisper touches meta.json while a recording is
+    # running, so a stale mtime is the only way to tell a finished recording
+    # whose transcription came back empty from one still being written.
+    meta_mtime: float = 0.0
 
     class Config:
         extra = "ignore"
+
+    @property
+    def has_transcript(self) -> bool:
+        """Whether superwhisper produced any transcript content.
+
+        Whitespace is not content: a failed cloud transcription can come back
+        as a few spaces, which must not be mistaken for a real transcript.
+        """
+        if self.result.strip() or self.rawResult.strip():
+            return True
+        return bool(self.segments)
 
 
 class RecordingGroup(BaseModel):
@@ -78,6 +94,22 @@ class RecordingGroup(BaseModel):
     def duration(self) -> int:
         """Total recorded milliseconds, excluding the gaps between parts."""
         return sum(r.duration for r in self.recordings)
+
+    @property
+    def has_transcript(self) -> bool:
+        """Whether any part of the conversation was transcribed."""
+        return any(r.has_transcript for r in self.recordings)
+
+    @property
+    def untranscribed_recordings(self) -> List[Recording]:
+        """Parts that produced no transcript.
+
+        Grouping regularly puts a short recording that transcribed next to a
+        long one that did not, so this is not an all-or-nothing property. A
+        note that omits a failed part without saying so understates the
+        conversation it claims to record.
+        """
+        return [r for r in self.recordings if not r.has_transcript]
 
     @property
     def diarized_recordings(self) -> List[Recording]:
@@ -154,6 +186,7 @@ class ScanResult(BaseModel):
     recordings: List[Recording] = Field(default_factory=list)
     skipped_archived: int = 0
     skipped_incomplete: int = 0
+    transcription_failed: int = 0
     skipped_filtered: int = 0
     failed_to_parse: int = 0
 

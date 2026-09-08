@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from archiver.models import Recording
-from archiver.scanner import Scanner, is_complete
+from archiver.scanner import Scanner, has_transcript, is_complete
 
 
 def _create_recording(tmp_path: Path, dir_name: str, meta: dict):
@@ -101,8 +101,11 @@ def test_zero_duration_is_never_complete():
     assert is_complete(_recording(duration=0)) is False
 
 
-def test_whitespace_only_transcript_without_segments_is_not_complete():
-    assert is_complete(_recording(result="  ", rawResult="\n", segments=[])) is False
+def test_whitespace_only_transcript_does_not_count_as_a_transcript():
+    """Whitespace is not content; such a recording is still awaiting its text."""
+    rec = _recording(result="  ", rawResult="\n", segments=[], meta_mtime=1000.0)
+    assert not has_transcript(rec)
+    assert not is_complete(rec, now=1000.0 + 60)
 
 
 def test_scan_skips_in_progress_recordings(tmp_path):
@@ -185,3 +188,62 @@ def test_since_is_available_as_an_explicit_filter(tmp_path):
     _create_recording(tmp_path, "1770978720", old_meta)
     result = Scanner(str(tmp_path)).scan(since="2026-02-10")
     assert [r.source_dir for r in result.recordings] == ["1770978710"]
+
+
+# --- Abandoned transcription -------------------------------------------
+
+# What superwhisper leaves behind when a recording finishes but its
+# transcription comes back empty: a real duration, and nothing else. This is
+# indistinguishable from an in-flight recording except that meta.json stops
+# being touched.
+ABANDONED_META = {
+    **MEETING_META,
+    "datetime": "2026-09-08T09:28:06",
+    "result": "",
+    "rawResult": "      ",
+    "duration": 1893000,
+    "segments": [],
+}
+
+
+def test_finished_recording_with_empty_transcript_is_complete_once_stale():
+    """A finished-but-empty recording is a terminal failure, not work in flight."""
+    rec = _recording(**ABANDONED_META, meta_mtime=1000.0)
+    assert is_complete(rec, now=1000.0 + 7201)
+
+
+def test_finished_recording_with_empty_transcript_waits_out_the_grace_period():
+    """Transcription lands minutes after the audio stops; do not stub it early."""
+    rec = _recording(**ABANDONED_META, meta_mtime=1000.0)
+    assert not is_complete(rec, now=1000.0 + 600)
+
+
+def test_in_flight_recording_is_never_complete_however_stale():
+    """duration == 0 means superwhisper has not finished; age is irrelevant."""
+    rec = _recording(**IN_PROGRESS_META, meta_mtime=1000.0)
+    assert not is_complete(rec, now=1000.0 + 999999)
+
+
+def test_scan_admits_a_stale_empty_recording(tmp_path):
+    import os
+
+    _create_recording(tmp_path, "1788859686", ABANDONED_META)
+    meta = tmp_path / "1788859686" / "meta.json"
+    os.utime(meta, (0, 0))
+
+    result = Scanner(str(tmp_path)).scan()
+
+    assert [r.source_dir for r in result.recordings] == ["1788859686"]
+    assert result.skipped_incomplete == 0
+
+
+def test_scan_reports_abandoned_transcriptions(tmp_path):
+    """The count is surfaced so a failed transcription is never silent."""
+    import os
+
+    _create_recording(tmp_path, "1788859686", ABANDONED_META)
+    os.utime(tmp_path / "1788859686" / "meta.json", (0, 0))
+
+    result = Scanner(str(tmp_path)).scan()
+
+    assert result.transcription_failed == 1

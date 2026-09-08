@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -12,20 +13,66 @@ from .models import ArchiverConfig, Recording, RecordingGroup, ScanResult
 logger = logging.getLogger(__name__)
 
 
-def is_complete(recording: Recording) -> bool:
-    """Whether superwhisper has finished writing this recording.
+# How long meta.json must sit untouched before an empty transcript is taken
+# for a failure rather than for work still in progress. Transcription runs
+# well after the audio stops — a long meeting has been observed finishing 16
+# minutes later — so the wait is generous. The archiver runs every 15 minutes,
+# so waiting costs nothing but the delay.
+TRANSCRIPTION_GRACE_SECONDS = 7200
+
+
+def has_transcript(recording: Recording) -> bool:
+    """Whether superwhisper produced any transcript content for a recording."""
+    return recording.has_transcript
+
+
+def transcription_failed(
+    recording: Recording,
+    now: Optional[float] = None,
+    grace_seconds: int = TRANSCRIPTION_GRACE_SECONDS,
+) -> bool:
+    """Whether superwhisper finished this recording but transcribed nothing.
+
+    A recording that ends with an empty transcript looks exactly like one
+    still being written: no result, no segments. The difference is that
+    superwhisper keeps touching meta.json while a recording is live, so once
+    the file has been untouched for the grace period and the transcript is
+    still empty, no transcript is coming.
+
+    Treating the two as the same state is how a finished meeting gets retried
+    forever and never archived.
+    """
+    if not recording.datetime or recording.duration <= 0:
+        return False
+    if has_transcript(recording):
+        return False
+    if now is None:
+        now = time.time()
+    return (now - recording.meta_mtime) > grace_seconds
+
+
+def is_complete(
+    recording: Recording,
+    now: Optional[float] = None,
+    grace_seconds: int = TRANSCRIPTION_GRACE_SECONDS,
+) -> bool:
+    """Whether superwhisper is done with this recording, one way or another.
 
     The recording directory and a placeholder meta.json appear within seconds
     of a recording starting; the real transcript is written into the same file
     when it ends, which for a long meeting can be an hour later. Archiving a
     placeholder would commit an empty note and mark it done forever, so an
     unfinished recording is passed over and reconsidered on a later run.
+
+    "Done" includes a transcription that came back empty and is never going to
+    fill in. That is a terminal state, and admitting it is what keeps the
+    recording from being retried forever — see ``transcription_failed``.
     """
     if not recording.datetime or recording.duration <= 0:
         return False
-    if recording.result.strip() or recording.rawResult.strip():
+    if has_transcript(recording):
         return True
-    return bool(recording.segments)
+    return transcription_failed(recording, now=now, grace_seconds=grace_seconds)
 
 
 def group_recordings(
@@ -132,7 +179,12 @@ class Scanner:
 
             try:
                 meta = json.loads(meta_path.read_text())
-                recording = Recording(source_dir=entry.name, **meta)
+                meta.pop("meta_mtime", None)
+                recording = Recording(
+                    source_dir=entry.name,
+                    meta_mtime=meta_path.stat().st_mtime,
+                    **meta,
+                )
             except Exception as e:
                 logger.warning(f"Failed to parse {meta_path}: {e}")
                 result.failed_to_parse += 1
@@ -142,6 +194,14 @@ class Scanner:
                 logger.debug(f"Skipping {entry.name}: still recording or not yet finalised")
                 result.skipped_incomplete += 1
                 continue
+
+            if not has_transcript(recording):
+                logger.warning(
+                    f"{entry.name}: superwhisper finished a "
+                    f"{recording.duration // 60000}m recording but transcribed nothing; "
+                    f"archiving it as a failed transcription"
+                )
+                result.transcription_failed += 1
 
             recordings.append(recording)
 
