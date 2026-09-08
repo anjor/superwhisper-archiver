@@ -39,6 +39,11 @@ class MarkdownFormatter:
         if group.speaker_count:
             parts.append(f"speaker_count: {group.speaker_count}")
 
+        if not group.has_transcript:
+            parts.append("transcription_failed: true")
+        elif group.untranscribed_recordings:
+            parts.append(f"transcription_failed_parts: {len(group.untranscribed_recordings)}")
+
         if len(group.recordings) == 1:
             parts.append(f'source_dir: "{rec.source_dir}"')
         else:
@@ -65,6 +70,9 @@ class MarkdownFormatter:
                 f"*Assembled from {len(group.recordings)} consecutive recordings.*\n"
             )
 
+        if group.untranscribed_recordings:
+            parts.append(self._build_failure_notice(group))
+
         transcription = self._build_transcription(group)
         if transcription:
             parts.append(f"## Transcription\n\n{transcription}\n")
@@ -84,6 +92,37 @@ class MarkdownFormatter:
         parts.append(f"\n---\n*Archived: {datetime.now().strftime('%Y-%m-%d')}*\n")
 
         return "\n".join(parts)
+
+    def _build_failure_notice(self, group: RecordingGroup) -> str:
+        """Explain what is missing, and say where the audio still is.
+
+        A meeting whose transcription came back empty is still worth a note —
+        it is the only record that the conversation happened, and the audio it
+        points at can be transcribed again by hand. The same applies to one
+        failed part of an otherwise readable note, which would otherwise be
+        omitted with nothing to show it was ever there.
+        """
+        failed = group.untranscribed_recordings
+        if group.has_transcript:
+            lead = (
+                f"{len(failed)} of this note's {len(group.recordings)} parts finished "
+                "but returned no transcript, so the text below is missing "
+                f"{self._format_duration(sum(r.duration for r in failed))} of the "
+                "conversation."
+            )
+        else:
+            lead = (
+                "This recording finished, but superwhisper returned no "
+                "transcript for it."
+            )
+
+        audio = "\n".join(f"- `{r.source_dir}/output.wav`" for r in failed)
+        return (
+            "## Transcription Failed\n\n"
+            f"{lead} The audio is still on disk, under the superwhisper "
+            "recordings directory:\n\n"
+            f"{audio}\n"
+        )
 
     def _build_transcription(self, group: RecordingGroup) -> str:
         """Concatenate each part's transcript, in order.

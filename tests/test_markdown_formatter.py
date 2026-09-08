@@ -157,3 +157,75 @@ def test_merged_segments_are_offset_to_the_group_start():
 def test_merged_note_marks_the_part_boundaries():
     md = _format(*_split_call())
     assert md.count("### Part ") == 2
+
+
+# --- Failed transcription ----------------------------------------------
+
+
+def _failed_recording(**overrides) -> Recording:
+    """A recording superwhisper finished but transcribed to nothing."""
+    return _make_recording(result="", rawResult="      ", segments=[], **overrides)
+
+
+def test_failed_transcription_is_flagged_in_frontmatter():
+    """Greppable, so these notes can be found and re-transcribed later."""
+    md = _format(_failed_recording())
+    assert "transcription_failed: true" in md
+
+
+def test_failed_transcription_says_so_in_the_body():
+    md = _format(_failed_recording())
+    assert "## Transcription Failed" in md
+    assert "superwhisper returned no transcript" in md
+
+
+def test_failed_transcription_points_at_the_audio():
+    """The note is only useful if it says where the recoverable audio is."""
+    md = _format(_failed_recording(source_dir="1788859686"))
+    assert "1788859686/output.wav" in md
+
+
+def test_failed_transcription_keeps_the_duration():
+    """The whole point is recording that a 31-minute meeting happened."""
+    md = _format(_failed_recording(duration=1893000))
+    assert "duration_ms: 1893000" in md
+    assert "31m 33s" in md
+
+
+def test_successful_transcription_is_not_flagged():
+    md = _format()
+    assert "transcription_failed" not in md
+    assert "Transcription Failed" not in md
+
+
+def test_group_with_one_good_part_is_not_flagged_as_wholly_failed():
+    """The boolean means "nothing here"; one good part makes that untrue."""
+    good = _make_recording(source_dir="a", datetime="2026-02-13T10:31:50")
+    bad = _failed_recording(source_dir="b", datetime="2026-02-13T10:32:30")
+    md = MarkdownFormatter().format_group(_group(good, bad))
+    assert "transcription_failed: true" not in md
+
+
+def test_partly_failed_group_still_declares_what_is_missing():
+    """Regression: a 29-minute note once rendered 45s of text and said nothing.
+
+    Grouping put a short recording that transcribed next to a long one that
+    did not. Because *something* was transcribed the note read as complete,
+    silently omitting the 28 minutes that failed.
+    """
+    good = _make_recording(source_dir="1788338239", datetime="2026-09-02T08:37:19")
+    bad = _failed_recording(
+        source_dir="1788338291", datetime="2026-09-02T08:38:11", duration=1704000
+    )
+    md = MarkdownFormatter().format_group(_group(good, bad))
+
+    assert "transcription_failed_parts: 1" in md
+    assert "## Transcription Failed" in md
+    assert "1788338291/output.wav" in md
+
+
+def test_partly_failed_group_does_not_list_the_parts_that_worked():
+    good = _make_recording(source_dir="1788338239", datetime="2026-09-02T08:37:19")
+    bad = _failed_recording(source_dir="1788338291", datetime="2026-09-02T08:38:11")
+    md = MarkdownFormatter().format_group(_group(good, bad))
+    assert "1788338239/output.wav" not in md

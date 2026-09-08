@@ -86,6 +86,35 @@ group is done only when every one of its recordings is.
 
 Recording timestamps in `meta.json` are UTC and are stored as-is.
 
+## When transcription comes back empty
+
+A recording can finish and still have no transcript: superwhisper writes the
+real `duration` but its cloud transcription returns nothing — sometimes
+literally a few spaces in `rawResult`. On disk that is indistinguishable from
+a recording still in flight, and treating the two the same way is how a
+finished 31-minute meeting gets skipped as "not yet finalised" on every run
+forever, without ever appearing in the archive or in an error.
+
+The tell is `meta.json`'s mtime. superwhisper keeps touching that file while a
+recording is live, so once it has sat untouched for
+`scanner.TRANSCRIPTION_GRACE_SECONDS` and the transcript is still empty, no
+transcript is coming. The wait is deliberately generous — transcription runs
+well after the audio stops, by 16 minutes for one observed meeting — and since
+the archiver runs every 15 minutes, waiting costs nothing but the delay.
+
+Such a recording is then archived as a **stub note**: the usual frontmatter
+plus `transcription_failed: true`, and a body saying what happened and where
+the audio still is. That keeps the record that the conversation happened, lets
+you re-transcribe from the `output.wav` it points at, and — because the note is
+committed — stops the recording being retried forever.
+
+Grouping makes this partial rather than all-or-nothing: a short recording that
+transcribed is regularly grouped with a long one that did not. A note that
+dropped the failed part silently would claim 29 minutes and show 45 seconds of
+text, so failed parts are always declared, with `transcription_failed_parts: N`
+in the frontmatter and the missing duration named in the body.
+
+
 ## Diarization
 
 When a mode has diarization enabled, superwhisper tags each segment with a
