@@ -1,7 +1,7 @@
 # Automatic meeting capture — design
 
 **Date:** 2026-08-17 (revised same day)
-**Status:** approved in principle; scope reduced after `154b5fb`
+**Status:** step 1 verified 2026-09-01; steps 2–5 outstanding
 **Branch:** `feat/meeting-auto-capture-trigger`, cut from
 `fix/watermark-data-loss-and-granola-cutover`
 
@@ -38,6 +38,69 @@ The coherent reading of that testing is different and more useful:
 So the design needs a working **stop**, and start may well be fine over the URL
 scheme. Both should be verified directly before the daemon is built; see
 Implementation order.
+
+## Step 1 settled — probed 2026-09-01 on superwhisper 2.17.3
+
+`swhelper mic` exists now, and watching the mic while driving the URL scheme
+answers the three questions the daemon rests on:
+
+| Question | Answer |
+|---|---|
+| Does superwhisper hold the mic while recording? | **Yes** — appears ~1.3s after `record` |
+| Does `superwhisper://record` start a recording? | **Yes** |
+| Does `superwhisper://stop` end one? | **No** — mic still held after 60s |
+| Does `superwhisper://cancel` end one? | **No** |
+| Does the ⌥Space hotkey end one? | **Yes** — mic released within 2s |
+
+The 25-second probe ran for **238 seconds**, ending only when `swhelper toggle`
+pressed the hotkey. That is the "forgot to switch it off" failure reproduced
+deliberately, and it confirms the first draft's suspicion about `stop`.
+
+Three consequences for the design:
+
+- **The daemon must use the hotkey to stop**, not the URL scheme. `record` over
+  the URL scheme is fine for START; STOP is `swhelper toggle`.
+- **Accessibility moves onto the critical path.** It was written up as a
+  fallback risk; it is now load-bearing for every stop. The verification loop
+  and its alert are what keep a revoked permission from silently recording
+  forever — and, per the 3h hard cap, that is not a hypothetical.
+- **The verification loop works as designed.** `actual` is observable, so START
+  and STOP can both be checked rather than assumed.
+
+`com.apple.replayd` also appears alongside superwhisper during Meeting mode —
+that is ScreenCaptureKit taking system audio, a second confirmation that a
+capture is really running and not just the mic being open.
+
+### swhelper as built
+
+`mic` prints the bundle IDs holding audio input as a JSON array, falling back to
+the executable name for processes without a bundle ID, so an unidentifiable mic
+holder still shows up in the log. `mic --detail` dumps every audio process with
+pid, name and input/output state, which is what the probe used. `toggle` posts
+the record hotkey, read from superwhisper's own `KeyboardShortcuts_toggleRecording`
+preference rather than hardcoded, so a rebind does not silently break the daemon;
+`toggle --check` reports the resolved hotkey and whether Accessibility is granted
+without pressing anything.
+
+Toggling is blind — it starts if stopped and stops if started — so the
+reconciler must read `mic` before and after rather than trusting the press.
+
+**Build note.** `swiftc` is resolved explicitly by `build.sh`, not taken off
+PATH: a half-updated Xcode.app can leave `swift`, `swiftc` and `xcodebuild`
+failing to load (`libxcodebuildLoader.dylib: Symbol not found: _XPCTypeBool`)
+while the CommandLineTools toolchain beside it works. Each compiler is paired
+with its own SDK because the CLT `swiftc` cannot find the standard library
+otherwise.
+
+### Still open after step 1
+
+- `swhelper` inherits the Accessibility grant of whoever launches it. It ran
+  trusted from a terminal that already had the permission; **under launchd it
+  will need its own grant**, which has to be confirmed when the daemon is
+  installed.
+- `diarize` is still `false` in `~/Documents/superwhisper/modes/meeting.json`.
+  The renderer from `40e4c57` is shipped but nothing produces `speakers` yet, so
+  design step 2 is not actually done.
 
 ## What is verified
 
@@ -230,11 +293,10 @@ Slack huddle, then a real Zoom call.
 
 ## Implementation order
 
-1. **Settle start/stop.** Build `swhelper mic` and use it to watch what actually
-   happens during `superwhisper://record` and `stop`, reading `meta.json` only
-   after the recording has ended. This decides whether the daemon uses URLs or
-   synthesises ⌥Space, and confirms whether superwhisper holds the mic while
-   recording. Everything else depends on it.
+1. ~~**Settle start/stop.**~~ **Done 2026-09-01** — see "Step 1 settled" above.
+   START is `superwhisper://record`; STOP is `swhelper toggle`, because the URL
+   scheme cannot stop a recording. superwhisper does hold the mic while
+   recording, so the verification loop is viable.
 2. Enable `diarize: true`, capture one real meeting, inspect the `speakers`
    shape before writing the formatter against a guess.
 3. `reconcile()` and its tests.
@@ -243,9 +305,10 @@ Slack huddle, then a real Zoom call.
 
 ## Risks
 
-**⌥Space collides with dictation** if the hotkey path is needed. Pressing it
-mid-meeting stops the recording; the override latch prevents fragment files but
-not the lost audio. Check whether superwhisper supports a per-mode hotkey.
+**⌥Space collides with dictation.** The hotkey path is not a maybe any more —
+step 1 settled that it is the only working stop. Pressing it mid-meeting stops
+the recording; the override latch prevents fragment files but not the lost
+audio. Check whether superwhisper supports a per-mode hotkey.
 
 **Accessibility permission is revocable** and updates can reset it — hence the
 verification loop and its alert.
