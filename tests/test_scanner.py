@@ -1,15 +1,28 @@
 import json
+import os
+import time
 from pathlib import Path
 
 from archiver.models import Recording
 from archiver.scanner import Scanner, has_transcript, is_complete
 
 
+def _settle(meta_path: Path):
+    """Age meta.json by an hour, as if superwhisper finished with it then.
+
+    Long enough to clear the settle period, short of the grace period after
+    which an empty transcript is declared a failure.
+    """
+    an_hour_ago = time.time() - 3600
+    os.utime(meta_path, (an_hour_ago, an_hour_ago))
+
+
 def _create_recording(tmp_path: Path, dir_name: str, meta: dict):
-    """Helper to create a fake recording directory."""
+    """Helper to create a fake recording directory, finished an hour ago."""
     rec_dir = tmp_path / dir_name
     rec_dir.mkdir()
     (rec_dir / "meta.json").write_text(json.dumps(meta))
+    _settle(rec_dir / "meta.json")
 
 
 MEETING_META = {
@@ -128,6 +141,7 @@ def test_in_progress_recording_is_picked_up_once_finalised(tmp_path):
     # superwhisper rewrites meta.json in place when the recording finishes.
     finalised = {**IN_PROGRESS_META, "duration": 1689000, "result": "the real transcript"}
     (tmp_path / "1780000000" / "meta.json").write_text(json.dumps(finalised))
+    _settle(tmp_path / "1780000000" / "meta.json")
 
     result = scanner.scan()
     assert [r.source_dir for r in result.recordings] == ["1780000000"]
@@ -225,8 +239,6 @@ def test_in_flight_recording_is_never_complete_however_stale():
 
 
 def test_scan_admits_a_stale_empty_recording(tmp_path):
-    import os
-
     _create_recording(tmp_path, "1788859686", ABANDONED_META)
     meta = tmp_path / "1788859686" / "meta.json"
     os.utime(meta, (0, 0))
@@ -237,10 +249,124 @@ def test_scan_admits_a_stale_empty_recording(tmp_path):
     assert result.skipped_incomplete == 0
 
 
+# --- Live transcripts (superwhisper 3.0 meetings) ------------------------
+
+# superwhisper 3.0 detects meetings by itself and, unlike 2.x, writes the
+# transcript into meta.json *while the meeting is still going*: duration,
+# result and segments all grow every few seconds. Shaped on 1793811621, the
+# first such meeting, as it looked 3.5 minutes in. Note there is no llmResult
+# yet; that arrives when the meeting ends.
+LIVE_MEETING_META = {
+    "datetime": "2026-11-04T17:00:21",
+    "processingTime": 2714,
+    "appVersion": "3.0.1",
+    "modelKey": "sv-1",
+    "rawResult": "Hey. Hey. Yeah, sorry, I was waiting in your Zoom.",
+    "duration": 208932,
+    "systemAudioEnabled": True,
+    "languageModelKey": "sl-1",
+    "literalPunctuationEnabled": False,
+    "separateSpeakersEnabled": True,
+    "modelName": "S1-Voice (Cloud)",
+    "languageModelName": "S1-Language",
+    "result": "Hey. Hey. Yeah, sorry, I was waiting in your Zoom.",
+    "recordingDevice": "",
+    "modeName": "Meeting",
+    "applicationContextEnabled": False,
+    "promptContext": {
+        "applicationContext": {"nouns": [], "name": "", "includeInPrompt": False},
+        "userContext": {},
+        "systemContext": {"time": "", "language": "en"},
+        "modeContext": {"type": "custom", "examples": [], "language": "en"},
+    },
+    "translationEnabled": False,
+    "realtimeEnabled": False,
+    "languageSelected": "en",
+    "speakers": [
+        {"name": "Anjor Kanekar", "number": 0},
+        {"name": "Yuqi Li", "number": 1},
+    ],
+    "prompt": "",
+    "kind": "meeting",
+    "segments": [
+        {"speaker": 1, "text": "Hey.", "start": 0.4, "end": 0.9,
+         "words": [{"text": " Hey.", "start": 0.4, "end": 0.9}]},
+        {"speaker": 0, "text": "Hey.", "start": 1.2, "end": 1.6,
+         "words": [{"text": " Hey.", "start": 1.2, "end": 1.6}]},
+    ],
+}
+
+# The same meeting once it has ended: 24.9 minutes, and an llmResult.
+FINISHED_MEETING_META = {
+    **LIVE_MEETING_META,
+    "duration": 1493767,
+    "result": "Hey. Hey. Yeah, sorry, I was waiting in your Zoom. ... Talk soon, bye.",
+    "rawResult": "Hey. Hey. Yeah, sorry, I was waiting in your Zoom. ... Talk soon, bye.",
+    "llmResult": "Summary of the meeting.",
+    "languageModelProcessingTime": 4100,
+}
+
+
+def test_live_meeting_is_not_complete_while_meta_json_is_still_being_written():
+    """Regression: a 25-minute meeting was archived 11 minutes in, then never again.
+
+    The transcript is non-empty from the first seconds of a 3.0 meeting, so
+    "has a transcript" no longer means "finished".
+    """
+    rec = _recording(**LIVE_MEETING_META, meta_mtime=1000.0)
+    assert not is_complete(rec, now=1000.0 + 5)
+
+
+def test_transcript_is_complete_once_meta_json_has_settled():
+    rec = _recording(**FINISHED_MEETING_META, meta_mtime=1000.0)
+    assert is_complete(rec, now=1000.0 + 601)
+
+
+def test_transcript_touched_minutes_ago_is_not_yet_settled():
+    """A pause in a live meeting must not be mistaken for its end."""
+    rec = _recording(**LIVE_MEETING_META, meta_mtime=1000.0)
+    assert not is_complete(rec, now=1000.0 + 300)
+
+
+def test_live_meeting_is_archived_with_its_final_transcript(tmp_path):
+    """Simulate the scheduled runs that straddle a meeting."""
+    _create_recording(tmp_path, "1793811621", LIVE_MEETING_META)
+    meta = tmp_path / "1793811621" / "meta.json"
+    os.utime(meta, None)  # superwhisper wrote it a moment ago
+    scanner = Scanner(str(tmp_path))
+
+    mid_meeting = scanner.scan()
+    assert mid_meeting.recordings == []
+    assert mid_meeting.skipped_incomplete == 1
+
+    # The meeting ends; superwhisper writes the final transcript and stops
+    # touching the file. A later run finds it settled.
+    meta.write_text(json.dumps(FINISHED_MEETING_META))
+    _settle(meta)
+
+    after = scanner.scan()
+    assert [r.duration for r in after.recordings] == [1493767]
+    assert after.recordings[0].result.endswith("Talk soon, bye.")
+
+
+def test_scan_records_which_audio_file_superwhisper_kept(tmp_path):
+    """2.x saved output.wav, 3.0 saves output.ogg, and some have none at all."""
+    for dir_name, audio in [("1790674087", "output.wav"), ("1793811621", "output.ogg")]:
+        _create_recording(tmp_path, dir_name, MEETING_META)
+        (tmp_path / dir_name / audio).write_bytes(b"")
+    _create_recording(tmp_path, "1793619608", MEETING_META)
+
+    result = Scanner(str(tmp_path)).scan()
+
+    assert {r.source_dir: r.audio_file for r in result.recordings} == {
+        "1790674087": "output.wav",
+        "1793811621": "output.ogg",
+        "1793619608": None,
+    }
+
+
 def test_scan_reports_abandoned_transcriptions(tmp_path):
     """The count is surfaced so a failed transcription is never silent."""
-    import os
-
     _create_recording(tmp_path, "1788859686", ABANDONED_META)
     os.utime(tmp_path / "1788859686" / "meta.json", (0, 0))
 

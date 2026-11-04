@@ -15,6 +15,17 @@ class Segment(BaseModel):
     confidence: Optional[float] = None
 
 
+class SpeakerName(BaseModel):
+    """superwhisper 3.0's name for one diarized speaker id in a recording.
+
+    Several ids can carry the same name: the diarizer sometimes splits one
+    person across two ids.
+    """
+
+    number: int
+    name: str = ""
+
+
 class Recording(BaseModel):
     """A parsed superwhisper recording from meta.json.
 
@@ -32,6 +43,7 @@ class Recording(BaseModel):
     rawResult: str = ""
     duration: int = 0  # milliseconds
     segments: List[Segment] = Field(default_factory=list)
+    speakers: List[SpeakerName] = Field(default_factory=list)
     modeName: str = ""
     modelName: str = ""
     languageSelected: str = ""
@@ -44,6 +56,10 @@ class Recording(BaseModel):
     # running, so a stale mtime is the only way to tell a finished recording
     # whose transcription came back empty from one still being written.
     meta_mtime: float = 0.0
+    # The audio file in the recording directory, filled in by the scanner.
+    # superwhisper 2.x saved output.wav and 3.0 saves output.ogg; some
+    # recordings keep no audio at all.
+    audio_file: Optional[str] = None
 
     class Config:
         extra = "ignore"
@@ -58,6 +74,24 @@ class Recording(BaseModel):
         if self.result.strip() or self.rawResult.strip():
             return True
         return bool(self.segments)
+
+    def speaker_label(self, speaker: int) -> str:
+        """The speaker's name if superwhisper knows it, else their number."""
+        for entry in self.speakers:
+            if entry.number == speaker and entry.name.strip():
+                return entry.name.strip()
+        return f"Speaker {speaker}"
+
+    @property
+    def speaker_names(self) -> List[str]:
+        """Named speakers in superwhisper's order; one person may appear twice."""
+        return [s.name.strip() for s in self.speakers if s.name.strip()]
+
+    @property
+    def has_unnamed_speakers(self) -> bool:
+        """Whether any segment is attributed only to a per-recording number."""
+        named = {s.number for s in self.speakers if s.name.strip()}
+        return any(s.speaker is not None and s.speaker not in named for s in self.segments)
 
 
 class RecordingGroup(BaseModel):
@@ -120,12 +154,21 @@ class RecordingGroup(BaseModel):
         """Speakers in the part that heard the most of them.
 
         Not a sum: ids restart with each recording, so parts cannot be added
-        together without claiming more speakers than were present.
+        together without claiming more speakers than were present. Counted by
+        label, so two ids superwhisper names as one person count once.
         """
         return max(
-            (len({s.speaker for s in r.segments if s.speaker is not None}) for r in self.recordings),
+            (
+                len({r.speaker_label(s.speaker) for s in r.segments if s.speaker is not None})
+                for r in self.recordings
+            ),
             default=0,
         )
+
+    @property
+    def speaker_names(self) -> List[str]:
+        """Every named speaker across the parts, each once."""
+        return list(dict.fromkeys(name for r in self.recordings for name in r.speaker_names))
 
 
 class ArchiverConfig(BaseModel):
