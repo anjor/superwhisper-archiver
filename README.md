@@ -86,6 +86,22 @@ group is done only when every one of its recordings is.
 
 Recording timestamps in `meta.json` are UTC and are stored as-is.
 
+## Waiting for meta.json to settle
+
+superwhisper 3.0 detects meetings by itself and, unlike 2.x, writes the
+transcript into `meta.json` *while the meeting is still going* — duration,
+text and segments grow every few seconds. A non-empty transcript therefore no
+longer means a recording has ended. Treating it as if it did is how the first
+3.0 meeting, 25 minutes long, was archived 11 minutes in and then never
+revisited, since an archived recording is not looked at again.
+
+So a transcript counts as final only once `meta.json` has gone untouched for
+`scanner.SETTLE_SECONDS` (10 minutes). That is far longer than any observed
+gap between writes during a meeting, and with a 15-minute schedule it delays
+a note by at most one run. It applies to every recording, not just 3.0
+meetings, so a change in how superwhisper writes the file cannot reopen the
+same hole.
+
 ## When transcription comes back empty
 
 A recording can finish and still have no transcript: superwhisper writes the
@@ -104,8 +120,9 @@ the archiver runs every 15 minutes, waiting costs nothing but the delay.
 
 Such a recording is then archived as a **stub note**: the usual frontmatter
 plus `transcription_failed: true`, and a body saying what happened and where
-the audio still is. That keeps the record that the conversation happened, lets
-you re-transcribe from the `output.wav` it points at, and — because the note is
+the audio still is — `output.wav` from 2.x, `output.ogg` from 3.0, whichever
+the recording directory actually holds. That keeps the record that the conversation happened, lets
+you re-transcribe from the audio it points at, and — because the note is
 committed — stops the recording being retried forever.
 
 Grouping makes this partial rather than all-or-nothing: a short recording that
@@ -125,6 +142,13 @@ section that merges each speaker's consecutive segments into one turn.
 Speaker ids are assigned **per recording**, so a grouped note cannot assume
 Speaker 0 is the same person throughout. Each part is rendered separately with
 a caveat, and `speaker_count` is the maximum across parts rather than the sum.
+
+superwhisper 3.0 meetings also carry a `speakers` list naming each id. Where a
+name is known it replaces "Speaker N" in segments and turns, and the names are
+listed under `speakers:` in the frontmatter. Labels, not ids, decide turns and
+`speaker_count`: the diarizer sometimes splits one person across two ids, and
+those should read as one person, not two. Names identify people across parts,
+so the per-part caveat is shown only when bare numbers are.
 
 Undiarized recordings render exactly as before.
 
