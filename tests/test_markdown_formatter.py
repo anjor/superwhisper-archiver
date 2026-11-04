@@ -181,8 +181,22 @@ def test_failed_transcription_says_so_in_the_body():
 
 def test_failed_transcription_points_at_the_audio():
     """The note is only useful if it says where the recoverable audio is."""
-    md = _format(_failed_recording(source_dir="1788859686"))
+    md = _format(_failed_recording(source_dir="1788859686", audio_file="output.wav"))
     assert "1788859686/output.wav" in md
+
+
+def test_failed_transcription_points_at_the_audio_file_that_exists():
+    """superwhisper 3.0 saves output.ogg; a note naming output.wav points at nothing."""
+    md = _format(_failed_recording(source_dir="1793811621", audio_file="output.ogg"))
+    assert "1793811621/output.ogg" in md
+    assert "output.wav" not in md
+
+
+def test_failed_transcription_without_audio_says_there_is_none():
+    """Some recordings keep no audio at all; do not promise a file that is not there."""
+    md = _format(_failed_recording(source_dir="1793619608", audio_file=None))
+    assert "1793619608/output" not in md
+    assert "no audio file" in md
 
 
 def test_failed_transcription_keeps_the_duration():
@@ -215,7 +229,10 @@ def test_partly_failed_group_still_declares_what_is_missing():
     """
     good = _make_recording(source_dir="1788338239", datetime="2026-09-02T08:37:19")
     bad = _failed_recording(
-        source_dir="1788338291", datetime="2026-09-02T08:38:11", duration=1704000
+        source_dir="1788338291",
+        datetime="2026-09-02T08:38:11",
+        duration=1704000,
+        audio_file="output.wav",
     )
     md = MarkdownFormatter().format_group(_group(good, bad))
 
@@ -225,7 +242,12 @@ def test_partly_failed_group_still_declares_what_is_missing():
 
 
 def test_partly_failed_group_does_not_list_the_parts_that_worked():
-    good = _make_recording(source_dir="1788338239", datetime="2026-09-02T08:37:19")
-    bad = _failed_recording(source_dir="1788338291", datetime="2026-09-02T08:38:11")
+    good = _make_recording(
+        source_dir="1788338239", datetime="2026-09-02T08:37:19", audio_file="output.wav"
+    )
+    bad = _failed_recording(
+        source_dir="1788338291", datetime="2026-09-02T08:38:11", audio_file="output.wav"
+    )
     md = MarkdownFormatter().format_group(_group(good, bad))
+    assert "1788338291/output.wav" in md
     assert "1788338239/output.wav" not in md

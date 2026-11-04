@@ -349,6 +349,22 @@ def test_live_meeting_is_archived_with_its_final_transcript(tmp_path):
     assert after.recordings[0].result.endswith("Talk soon, bye.")
 
 
+def test_scan_records_which_audio_file_superwhisper_kept(tmp_path):
+    """2.x saved output.wav, 3.0 saves output.ogg, and some have none at all."""
+    for dir_name, audio in [("1790674087", "output.wav"), ("1793811621", "output.ogg")]:
+        _create_recording(tmp_path, dir_name, MEETING_META)
+        (tmp_path / dir_name / audio).write_bytes(b"")
+    _create_recording(tmp_path, "1793619608", MEETING_META)
+
+    result = Scanner(str(tmp_path)).scan()
+
+    assert {r.source_dir: r.audio_file for r in result.recordings} == {
+        "1790674087": "output.wav",
+        "1793811621": "output.ogg",
+        "1793619608": None,
+    }
+
+
 def test_scan_reports_abandoned_transcriptions(tmp_path):
     """The count is surfaced so a failed transcription is never silent."""
     _create_recording(tmp_path, "1788859686", ABANDONED_META)

@@ -116,7 +116,12 @@ class MarkdownFormatter:
                 "transcript for it."
             )
 
-        audio = "\n".join(f"- `{r.source_dir}/output.wav`" for r in failed)
+        audio = "\n".join(
+            f"- `{r.source_dir}/{r.audio_file}`"
+            if r.audio_file
+            else f"- `{r.source_dir}/` — no audio file was found for this recording"
+            for r in failed
+        )
         return (
             "## Transcription Failed\n\n"
             f"{lead} The audio is still on disk, under the superwhisper "

@@ -87,6 +87,16 @@ def is_complete(
     return transcription_failed(recording, now=now, grace_seconds=grace_seconds)
 
 
+def find_audio_file(recording_dir: Path) -> Optional[str]:
+    """The name of the audio superwhisper kept for a recording, if any.
+
+    2.x saved ``output.wav`` and 3.0 saves ``output.ogg``; rather than chase
+    the format, take whichever ``output.*`` is actually there.
+    """
+    names = sorted(p.name for p in recording_dir.glob("output.*") if p.is_file())
+    return names[0] if names else None
+
+
 def group_recordings(
     recordings: List[Recording],
     grouping: ArchiverConfig.GroupingConfig,
@@ -192,9 +202,11 @@ class Scanner:
             try:
                 meta = json.loads(meta_path.read_text())
                 meta.pop("meta_mtime", None)
+                meta.pop("audio_file", None)
                 recording = Recording(
                     source_dir=entry.name,
                     meta_mtime=meta_path.stat().st_mtime,
+                    audio_file=find_audio_file(entry),
                     **meta,
                 )
             except Exception as e:

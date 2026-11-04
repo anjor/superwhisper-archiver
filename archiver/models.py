@@ -44,6 +44,10 @@ class Recording(BaseModel):
     # running, so a stale mtime is the only way to tell a finished recording
     # whose transcription came back empty from one still being written.
     meta_mtime: float = 0.0
+    # The audio file in the recording directory, filled in by the scanner.
+    # superwhisper 2.x saved output.wav and 3.0 saves output.ogg; some
+    # recordings keep no audio at all.
+    audio_file: Optional[str] = None
 
     class Config:
         extra = "ignore"
