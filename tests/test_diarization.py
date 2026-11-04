@@ -12,9 +12,16 @@ BASE = {
 }
 
 
-def _rec(source_dir="1786959203", datetime="2026-08-17T09:33:23", duration=60000, segments=None):
+def _rec(
+    source_dir="1786959203",
+    datetime="2026-08-17T09:33:23",
+    duration=60000,
+    segments=None,
+    speakers=None,
+):
     segments = [] if segments is None else segments
     text = " ".join(s["text"] for s in segments)
+    extra = {} if speakers is None else {"speakers": speakers}
     return Recording(
         source_dir=source_dir,
         datetime=datetime,
@@ -23,6 +30,7 @@ def _rec(source_dir="1786959203", datetime="2026-08-17T09:33:23", duration=60000
         rawResult=text,
         segments=segments,
         **BASE,
+        **extra,
     )
 
 
@@ -152,3 +160,75 @@ def test_mixed_group_only_renders_conversation_for_diarized_parts():
     assert "## Conversation" in md
     conversation = md.split("## Conversation", 1)[1].split("## Segments", 1)[0]
     assert "Hello world." not in conversation
+
+
+# --- Named speakers (superwhisper 3.0) -----------------------------------
+
+# 3.0 meetings name their speakers. Ids still come per recording, and two ids
+# can carry the same name: in 1793811621, ids 0 and 2 were both the user.
+NAMES = [
+    {"name": "Anjor Kanekar", "number": 0},
+    {"name": "Yuqi Li", "number": 1},
+    {"name": "Anjor Kanekar", "number": 2},
+]
+
+SPLIT_SPEAKER = [
+    {"text": "So the plan is", "start": 0.0, "end": 2.0, "speaker": 0},
+    {"text": "to ship on Friday.", "start": 2.1, "end": 4.0, "speaker": 2},
+    {"text": "Works for me.", "start": 5.0, "end": 6.0, "speaker": 1},
+]
+
+
+def _conversation(md):
+    return md.split("## Conversation", 1)[1].split("## Segments", 1)[0]
+
+
+def test_segments_are_labelled_with_the_speakers_name():
+    md = _format(_rec(segments=DIARIZED, speakers=NAMES))
+    assert "- [00:09.0 → 00:12.0] **Yuqi Li:** Yeah, that makes sense." in md
+    assert "Speaker 1" not in md
+
+
+def test_turns_are_labelled_with_the_speakers_name():
+    md = _format(_rec(segments=DIARIZED, speakers=NAMES))
+    assert "**Yuqi Li** — 00:09.0" in _conversation(md)
+
+
+def test_ids_that_share_a_name_merge_into_one_turn():
+    """Two ids, one person: the diarizer's split is not a change of speaker."""
+    md = _format(_rec(segments=SPLIT_SPEAKER, speakers=NAMES))
+    conversation = _conversation(md)
+    assert "So the plan is to ship on Friday." in conversation
+    assert conversation.count("**Anjor Kanekar**") == 1
+
+
+def test_speaker_count_counts_people_not_ids():
+    """Regression: a two-person meeting was archived as speaker_count: 3."""
+    md = _format(_rec(segments=SPLIT_SPEAKER, speakers=NAMES))
+    assert "speaker_count: 2" in md
+
+
+def test_frontmatter_lists_each_speaker_once_by_name():
+    md = _format(_rec(segments=SPLIT_SPEAKER, speakers=NAMES))
+    frontmatter = md.split("---\n")[1]
+    assert 'speakers:\n  - "Anjor Kanekar"\n  - "Yuqi Li"\n' in frontmatter
+    assert frontmatter.count("Anjor Kanekar") == 1
+
+
+def test_a_speaker_without_a_name_keeps_their_number():
+    md = _format(_rec(segments=DIARIZED, speakers=[{"name": "", "number": 0}]))
+    assert "**Speaker 0:** The problem here" in md
+    assert "**Speaker 1:** Yeah, that makes sense." in md
+
+
+def test_unnamed_recording_lists_no_speakers_in_frontmatter():
+    md = _format(_rec(segments=DIARIZED))
+    assert "speakers:" not in md
+
+
+def test_named_speakers_across_parts_need_no_numbering_caveat():
+    """Names identify people across parts in a way per-recording ids cannot."""
+    first = _rec("a", "2026-11-04T17:00:00", 20000, SPLIT_SPEAKER, NAMES)
+    second = _rec("b", "2026-11-04T17:00:30", 20000, SPLIT_SPEAKER, NAMES)
+    md = _format(first, second)
+    assert "numbering restarts" not in md.lower()

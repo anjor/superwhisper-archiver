@@ -1,6 +1,7 @@
 """Formats superwhisper recordings as Markdown."""
 
 from datetime import datetime
+import json
 import logging
 
 from .models import Recording, RecordingGroup
@@ -38,6 +39,13 @@ class MarkdownFormatter:
 
         if group.speaker_count:
             parts.append(f"speaker_count: {group.speaker_count}")
+        if group.speaker_names:
+            parts.append("speakers:")
+            # JSON strings are valid YAML double-quoted scalars, which keeps a
+            # name with a colon or a quote in it from breaking the frontmatter.
+            parts.extend(
+                f"  - {json.dumps(name, ensure_ascii=False)}" for name in group.speaker_names
+            )
 
         if not group.has_transcript:
             parts.append("transcription_failed: true")
@@ -159,7 +167,8 @@ class MarkdownFormatter:
             return ""
 
         blocks = []
-        if len(diarized) > 1:
+        # Names identify people across parts; only bare numbers restart.
+        if len(diarized) > 1 and any(r.has_unnamed_speakers for r in diarized):
             blocks.append(
                 "*Speaker numbering restarts with each part — "
                 "Speaker 0 in one part is not necessarily Speaker 0 in another.*"
@@ -175,23 +184,28 @@ class MarkdownFormatter:
         return "\n\n".join(blocks)
 
     def _build_turns(self, recording: Recording, offset: float) -> list:
-        """Merge each speaker's consecutive segments into a single turn."""
+        """Merge each speaker's consecutive segments into a single turn.
+
+        Turns follow the label rather than the id, so two ids superwhisper
+        names as the same person read as one turn.
+        """
         turns = []
-        current_speaker = None
+        current_label = None
         texts = []
         started_at = 0.0
 
         def flush():
             if texts:
                 stamp = self._format_timestamp(started_at + offset)
-                turns.append(f"**Speaker {current_speaker}** — {stamp}\n\n{' '.join(texts)}")
+                turns.append(f"**{current_label}** — {stamp}\n\n{' '.join(texts)}")
 
         for seg in recording.segments:
             if seg.speaker is None:
                 continue
-            if seg.speaker != current_speaker:
+            label = recording.speaker_label(seg.speaker)
+            if label != current_label:
                 flush()
-                current_speaker = seg.speaker
+                current_label = label
                 texts = []
                 started_at = seg.start
             texts.append(seg.text.strip())
@@ -211,7 +225,9 @@ class MarkdownFormatter:
             for seg in rec.segments:
                 start = self._format_timestamp(seg.start + offset)
                 end = self._format_timestamp(seg.end + offset)
-                speaker = f"**Speaker {seg.speaker}:** " if seg.speaker is not None else ""
+                speaker = (
+                    f"**{rec.speaker_label(seg.speaker)}:** " if seg.speaker is not None else ""
+                )
                 lines.append(f"- [{start} → {end}] {speaker}{seg.text}")
         return "\n".join(lines)
 
