@@ -51,6 +51,9 @@ class Recording(BaseModel):
     appVersion: str = ""
     languageModelName: Optional[str] = None
     llmResult: Optional[str] = None
+    # superwhisper 3.0 tags each recording "meeting" or "dictation"; 2.x
+    # recordings carry no kind.
+    kind: str = ""
     # Last-modified time of meta.json, filled in by the scanner rather than
     # read from the file. superwhisper touches meta.json while a recording is
     # running, so a stale mtime is the only way to tell a finished recording

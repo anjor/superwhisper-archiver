@@ -317,32 +317,59 @@ def test_live_meeting_is_not_complete_while_meta_json_is_still_being_written():
     assert not is_complete(rec, now=1000.0 + 5)
 
 
-def test_transcript_is_complete_once_meta_json_has_settled():
+def test_live_meeting_is_not_complete_however_long_it_goes_quiet():
+    """A long pause in a meeting must not be mistaken for its end.
+
+    Nothing guarantees that superwhisper touches meta.json while nobody is
+    speaking, so how long the file has gone unchanged cannot tell a quiet
+    stretch from a meeting that is over.
+    """
+    rec = _recording(**LIVE_MEETING_META, meta_mtime=1000.0)
+    assert not is_complete(rec, now=1000.0 + 3600)
+
+
+def test_meeting_is_complete_once_superwhisper_writes_its_summary():
+    """The summary is written only into the final meta.json, as the meeting ends."""
     rec = _recording(**FINISHED_MEETING_META, meta_mtime=1000.0)
+    assert is_complete(rec, now=1000.0 + 5)
+
+
+def test_an_empty_summary_still_marks_the_end_of_a_meeting():
+    """It is the field's arrival that marks the end, not what it says."""
+    rec = _recording(**{**FINISHED_MEETING_META, "llmResult": ""}, meta_mtime=1000.0)
+    assert is_complete(rec, now=1000.0 + 5)
+
+
+def test_meeting_whose_summary_never_comes_is_archived_after_the_grace_period():
+    """Better a note without a summary than no note at all."""
+    rec = _recording(**LIVE_MEETING_META, meta_mtime=1000.0)
+    assert is_complete(rec, now=1000.0 + 7201)
+
+
+def test_other_recordings_are_complete_once_meta_json_has_settled():
+    rec = _recording(kind="dictation", modeName="Default", meta_mtime=1000.0)
     assert is_complete(rec, now=1000.0 + 601)
 
 
-def test_transcript_touched_minutes_ago_is_not_yet_settled():
-    """A pause in a live meeting must not be mistaken for its end."""
-    rec = _recording(**LIVE_MEETING_META, meta_mtime=1000.0)
+def test_other_recordings_touched_minutes_ago_are_not_yet_settled():
+    """Recordings that are not meetings still wait for meta.json to go quiet."""
+    rec = _recording(kind="dictation", modeName="Default", meta_mtime=1000.0)
     assert not is_complete(rec, now=1000.0 + 300)
 
 
-def test_live_meeting_is_archived_with_its_final_transcript(tmp_path):
-    """Simulate the scheduled runs that straddle a meeting."""
-    _create_recording(tmp_path, "1793811621", LIVE_MEETING_META)
+def test_live_meeting_is_archived_once_superwhisper_ends_it(tmp_path):
+    """Simulate the scheduled runs that straddle a meeting with a long pause in it."""
+    _create_recording(tmp_path, "1793811621", LIVE_MEETING_META)  # last written an hour ago
     meta = tmp_path / "1793811621" / "meta.json"
-    os.utime(meta, None)  # superwhisper wrote it a moment ago
     scanner = Scanner(str(tmp_path))
 
-    mid_meeting = scanner.scan()
-    assert mid_meeting.recordings == []
-    assert mid_meeting.skipped_incomplete == 1
+    during_the_pause = scanner.scan()
+    assert during_the_pause.recordings == []
+    assert during_the_pause.skipped_incomplete == 1
 
-    # The meeting ends; superwhisper writes the final transcript and stops
-    # touching the file. A later run finds it settled.
+    # The user clicks End meeting and superwhisper writes the final meta.json,
+    # summary and all. The very next run archives it.
     meta.write_text(json.dumps(FINISHED_MEETING_META))
-    _settle(meta)
 
     after = scanner.scan()
     assert [r.duration for r in after.recordings] == [1493767]
