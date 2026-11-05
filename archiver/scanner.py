@@ -28,6 +28,15 @@ TRANSCRIPTION_GRACE_SECONDS = 7200
 # short. With a 15-minute schedule it delays a note by at most one run.
 SETTLE_SECONDS = 600
 
+# How long the audio file must sit untouched before a recording counts as
+# finished, whatever meta.json says. superwhisper writes the audio every 20
+# seconds or so while it records, and in none of the 2,806 recordings on disk
+# in November 2026 did it write the audio after the final meta.json. So audio
+# written in the last few minutes means superwhisper is still recording. This
+# is a safeguard in case meta.json ever looks final mid-recording. It delays a
+# note by at most one run.
+AUDIO_SETTLE_SECONDS = 300
+
 
 def has_transcript(recording: Recording) -> bool:
     """Whether superwhisper produced any transcript content for a recording."""
@@ -64,6 +73,7 @@ def is_complete(
     now: Optional[float] = None,
     grace_seconds: int = TRANSCRIPTION_GRACE_SECONDS,
     settle_seconds: int = SETTLE_SECONDS,
+    audio_settle_seconds: int = AUDIO_SETTLE_SECONDS,
 ) -> bool:
     """Whether superwhisper is done with this recording, one way or another.
 
@@ -81,6 +91,9 @@ def is_complete(
     ``grace_seconds``. Any other recording is finished once meta.json has
     stopped changing for ``settle_seconds``.
 
+    Whatever meta.json says, a recording whose audio was written in the last
+    ``audio_settle_seconds`` is still being recorded, so it is not done.
+
     "Done" includes a transcription that came back empty and is never going to
     fill in. That is a terminal state, and admitting it is what keeps the
     recording from being retried forever — see ``transcription_failed``.
@@ -89,6 +102,8 @@ def is_complete(
         return False
     if now is None:
         now = time.time()
+    if (now - recording.audio_mtime) <= audio_settle_seconds:
+        return False
     if not has_transcript(recording):
         return transcription_failed(recording, now=now, grace_seconds=grace_seconds)
     if recording.kind == "meeting":
@@ -212,10 +227,13 @@ class Scanner:
                 meta = json.loads(meta_path.read_text())
                 meta.pop("meta_mtime", None)
                 meta.pop("audio_file", None)
+                meta.pop("audio_mtime", None)
+                audio_file = find_audio_file(entry)
                 recording = Recording(
                     source_dir=entry.name,
                     meta_mtime=meta_path.stat().st_mtime,
-                    audio_file=find_audio_file(entry),
+                    audio_file=audio_file,
+                    audio_mtime=(entry / audio_file).stat().st_mtime if audio_file else 0.0,
                     **meta,
                 )
             except Exception as e:

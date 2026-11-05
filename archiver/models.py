@@ -63,6 +63,10 @@ class Recording(BaseModel):
     # superwhisper 2.x saved output.wav and 3.0 saves output.ogg; some
     # recordings keep no audio at all.
     audio_file: Optional[str] = None
+    # Last-modified time of that audio file, filled in by the scanner; 0.0 when
+    # there is none. superwhisper writes the audio as it records, so audio
+    # written moments ago means the recording is still going.
+    audio_mtime: float = 0.0
 
     class Config:
         extra = "ignore"

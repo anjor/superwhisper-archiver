@@ -18,7 +18,9 @@ schedule.
    currently `granola-notes`, a name left over from the Granola-based
    archiver this one replaced), commits, and pushes.
 
-So a meeting's note appears within 15 minutes of clicking End meeting.
+So a meeting's note appears within about 20 minutes of clicking End meeting:
+up to five minutes to be sure superwhisper has stopped recording, then up to
+15 until the next run.
 
 ## Usage
 
@@ -193,6 +195,17 @@ the end. As a precaution they still count as finished only once `meta.json`
 has gone untouched for `scanner.SETTLE_SECONDS` (10 minutes), so a change in
 how superwhisper writes the file cannot reopen the same hole.
 
+Whatever `meta.json` says, no recording counts as finished while superwhisper
+is still writing its audio: the audio file (`output.ogg`, or `output.wav` from
+2.x) must also have gone untouched for `scanner.AUDIO_SETTLE_SECONDS` (five
+minutes). superwhisper writes the audio every 20 seconds or so while it
+records, and in none of the 2,806 recordings on disk in November 2026 did it
+write the audio after the final `meta.json`. So audio written in the last few
+minutes means the recording is still going. This is a safeguard in case
+`meta.json` ever looks final mid-recording, for example if a later version of
+superwhisper writes the summary before a meeting ends. It delays a note by at
+most one run.
+
 ## When transcription comes back empty
 
 A recording can finish and still have no transcript: superwhisper writes the
@@ -264,6 +277,7 @@ see which apps are using the microphone.
 ## Development
 
 ```sh
+uv sync --extra dev    # pytest and ruff are in the dev extra
 uv run pytest tests/ -v
 uv run ruff check .
 ```
