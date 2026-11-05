@@ -1,7 +1,9 @@
 # Automatic meeting capture — design
 
 **Date:** 2026-08-17 (revised same day)
-**Status:** step 1 verified 2026-09-01; steps 2–5 outstanding
+**Status:** superseded by superwhisper 3.0's built-in meeting detection
+(November 2026); nothing runs the code this led to. Before that: step 1
+verified 2026-09-01; steps 2–5 outstanding.
 **Branch:** `feat/meeting-auto-capture-trigger`, cut from
 `fix/watermark-data-loss-and-granola-cutover`
 

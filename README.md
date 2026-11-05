@@ -6,6 +6,20 @@ Scans `~/Documents/superwhisper/recordings`, formats each qualifying recording
 as markdown with YAML frontmatter, and commits it to a notes repo on a
 schedule.
 
+## How it works
+
+1. superwhisper (3.0 or later) detects that a meeting has started and offers
+   to record it. Click **Start meeting**.
+2. When the meeting ends, it offers to stop. Click **End meeting**. A few
+   seconds later superwhisper writes the final transcript and a summary into
+   the recording's `meta.json`.
+3. Every 15 minutes the archiver picks up each finished recording it has not
+   archived yet, writes it as a note in the notes repo (`archive.repo_path`,
+   currently `granola-notes`, a name left over from the Granola-based
+   archiver this one replaced), commits, and pushes.
+
+So a meeting's note appears within 15 minutes of clicking End meeting.
+
 ## Usage
 
 ```sh
@@ -18,6 +32,54 @@ uv run python -m archiver --modes meeting,super
 Config is looked up in this order: `--config`, `$SUPERWHISPER_ARCHIVER_CONFIG`,
 `~/.config/superwhisper-archiver/config.yaml`, `./config.yaml`.
 
+## Running it on a schedule
+
+A launchd agent runs `uv run python -m archiver` in this checkout every 15
+minutes, and once whenever it is loaded. Its definition is
+[`launchd/com.anjor.superwhisper-archiver.plist`](launchd/com.anjor.superwhisper-archiver.plist).
+
+```sh
+# install
+cp launchd/com.anjor.superwhisper-archiver.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.anjor.superwhisper-archiver.plist
+
+# pause, and resume
+launchctl bootout gui/$(id -u)/com.anjor.superwhisper-archiver
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.anjor.superwhisper-archiver.plist
+
+# run now
+launchctl kickstart gui/$(id -u)/com.anjor.superwhisper-archiver
+```
+
+**It runs whatever is checked out.** The agent runs the code in this
+directory, so if a feature branch is checked out, that branch is what
+archives your meetings. Keep this checkout on `main`.
+
+Where things live:
+
+- **Config:** `config.yaml` in this repo. The agent passes no `--config` and
+  sets no `$SUPERWHISPER_ARCHIVER_CONFIG`, so unless
+  `~/.config/superwhisper-archiver/config.yaml` exists, this is the live
+  config.
+- **State:** `state/archive_state.db` (git-ignored). `archived_recordings`
+  records what has been archived, and `failed_recordings` what keeps failing.
+- **Logs:** `/tmp/superwhisper-archiver.log`, plus the agent's own output in
+  `/tmp/superwhisper-archiver-stdout.log` and
+  `/tmp/superwhisper-archiver-stderr.log`.
+
+## Configuration
+
+`config.yaml` has five sections:
+
+- `superwhisper.recordings_path`: where superwhisper keeps its recordings.
+- `archive`: the notes repo (`repo_path`), and the remote and branch it
+  pulls from and pushes to.
+- `filters`: which recordings are meetings worth a note. See
+  [What gets archived](#what-gets-archived).
+- `grouping`: how close together recordings must be to share a note. See
+  [One note per conversation](#one-note-per-conversation-not-per-recording).
+- `logging`: log level and file.
+
 ## What gets archived
 
 Two independent rules, either of which admits a recording:
@@ -29,6 +91,25 @@ Two independent rules, either of which admits a recording:
 The second rule exists because long mic-only conversations get recorded in a
 dictation mode; they are meetings in everything but the mode they were captured
 with. The duration floors keep accidental sub-second taps out of the archive.
+
+superwhisper 3.0 records the meetings it detects in its Meeting mode, so the
+`meeting` entry in `filters.modes` is what admits them.
+
+## What a note looks like
+
+Each note is written to `YYYY/MM/YYYY-MM-DD-HH-MM-SS.md` in the notes repo,
+named after the recording's start time. Its YAML frontmatter records when the
+meeting was and how long it ran, the mode, models and language, the speakers
+where known, and which recording directories it came from. The body has:
+
+- `## Transcription`: superwhisper's transcript.
+- `## Summary`: superwhisper's summary of the meeting, when there is one.
+- `## Conversation`: the transcript as turns, one per speaker, for diarized
+  recordings. See [Diarization](#diarization).
+- `## Segments`: every segment with its timestamps.
+
+A recording whose transcription failed gets a note saying so instead. See
+[When transcription comes back empty](#when-transcription-comes-back-empty).
 
 ## One note per conversation, not per recording
 
@@ -69,10 +150,12 @@ the last run".
 This matters because superwhisper creates the recording directory and writes a
 placeholder `meta.json` within seconds of a recording starting, then rewrites
 that same file with the real transcript when the recording ends — which for a
-long meeting can be an hour later. Anything that scans by recency sees the
-placeholder, skips it, and then never looks at that recording again. An earlier
-version of this archiver worked exactly that way and silently lost recordings,
-including two meetings over half an hour long.
+long meeting can be an hour later. (A 3.0 meeting rewrites it all the way
+through; see [Knowing when a meeting has ended](#knowing-when-a-meeting-has-ended).)
+Anything that scans by recency sees the placeholder, skips it, and then never
+looks at that recording again. An earlier version of this archiver worked
+exactly that way and silently lost recordings, including two meetings over
+half an hour long.
 
 So: a recording that is still in flight is passed over by `scanner.is_complete`
 and reconsidered on the next run, and a recording that fails to commit simply
@@ -119,26 +202,27 @@ a recording still in flight, and treating the two the same way is how a
 finished 31-minute meeting gets skipped as "not yet finalised" on every run
 forever, without ever appearing in the archive or in an error.
 
-The tell is `meta.json`'s mtime. superwhisper keeps touching that file while a
-recording is live, so once it has sat untouched for
-`scanner.TRANSCRIPTION_GRACE_SECONDS` and the transcript is still empty, no
-transcript is coming. The wait is deliberately generous — transcription runs
-well after the audio stops, by 16 minutes for one observed meeting — and since
-the archiver runs every 15 minutes, waiting costs nothing but the delay.
+The tell is `meta.json`'s mtime. Once the file has sat untouched for
+`scanner.TRANSCRIPTION_GRACE_SECONDS` (two hours) and the transcript is still
+empty, no transcript is coming. The wait is deliberately generous:
+transcription runs well after the audio stops (by 16 minutes for one observed
+meeting), and nothing guarantees that superwhisper touches the file while
+nobody is speaking. Since the archiver runs every 15 minutes, waiting costs
+nothing but the delay.
 
 Such a recording is then archived as a **stub note**: the usual frontmatter
 plus `transcription_failed: true`, and a body saying what happened and where
 the audio still is — `output.wav` from 2.x, `output.ogg` from 3.0, whichever
-the recording directory actually holds. That keeps the record that the conversation happened, lets
-you re-transcribe from the audio it points at, and — because the note is
-committed — stops the recording being retried forever.
+the recording directory actually holds. That keeps the record that the
+conversation happened, lets you re-transcribe from the audio it points at,
+and — because the note is committed — stops the recording being retried
+forever.
 
 Grouping makes this partial rather than all-or-nothing: a short recording that
 transcribed is regularly grouped with a long one that did not. A note that
 dropped the failed part silently would claim 29 minutes and show 45 seconds of
 text, so failed parts are always declared, with `transcription_failed_parts: N`
 in the frontmatter and the missing duration named in the body.
-
 
 ## Diarization
 
@@ -166,8 +250,20 @@ Failures are counted in `failed_recordings`. Once a recording has failed
 `ALERT_ATTEMPT_THRESHOLD` (3) runs in a row, a macOS notification fires, so a
 persistently broken archiver cannot fail quietly for days.
 
+## Unused: automatic meeting capture
+
+`archiver/reconciler.py`, `swhelper/` and
+[the auto-capture design](docs/plans/2026-08-17-meeting-auto-capture-design.md)
+come from an earlier plan for the archiver to start and stop superwhisper
+recordings itself whenever a call was on. Nothing runs them: the archiver
+does not import the reconciler, and no launchd agent starts it.
+superwhisper 3.0's own meeting detection does that job now. `swhelper` can
+still be built with `swhelper/build.sh`, and `swhelper mic` is a handy way to
+see which apps are using the microphone.
+
 ## Development
 
 ```sh
 uv run pytest tests/ -v
+uv run ruff check .
 ```
