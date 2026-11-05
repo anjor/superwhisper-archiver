@@ -3,18 +3,20 @@ import os
 import time
 from pathlib import Path
 
+import pytest
+
 from archiver.models import Recording
 from archiver.scanner import Scanner, has_transcript, is_complete
 
 
-def _settle(meta_path: Path):
-    """Age meta.json by an hour, as if superwhisper finished with it then.
+def _settle(path: Path):
+    """Age a file by an hour, as if superwhisper finished with it then.
 
-    Long enough to clear the settle period, short of the grace period after
+    Long enough to clear the settle periods, short of the grace period after
     which an empty transcript is declared a failure.
     """
     an_hour_ago = time.time() - 3600
-    os.utime(meta_path, (an_hour_ago, an_hour_ago))
+    os.utime(path, (an_hour_ago, an_hour_ago))
 
 
 def _create_recording(tmp_path: Path, dir_name: str, meta: dict):
@@ -381,6 +383,7 @@ def test_scan_records_which_audio_file_superwhisper_kept(tmp_path):
     for dir_name, audio in [("1790674087", "output.wav"), ("1793811621", "output.ogg")]:
         _create_recording(tmp_path, dir_name, MEETING_META)
         (tmp_path / dir_name / audio).write_bytes(b"")
+        _settle(tmp_path / dir_name / audio)
     _create_recording(tmp_path, "1793619608", MEETING_META)
 
     result = Scanner(str(tmp_path)).scan()
@@ -400,3 +403,63 @@ def test_scan_reports_abandoned_transcriptions(tmp_path):
     result = Scanner(str(tmp_path)).scan()
 
     assert result.transcription_failed == 1
+
+
+# --- Audio still being written -------------------------------------------
+
+# superwhisper writes the audio file every 20 seconds or so while it records,
+# and in none of the recordings on disk did it write the audio after the final
+# meta.json. Audio written in the last few minutes therefore means the
+# recording is still going, whatever meta.json says.
+
+
+def test_meeting_is_not_complete_while_its_audio_is_still_being_written():
+    """A summary that arrives before the meeting ends must not end it early."""
+    rec = _recording(
+        **FINISHED_MEETING_META, meta_mtime=1000.0, audio_file="output.ogg", audio_mtime=1980.0
+    )
+    assert not is_complete(rec, now=2000.0)
+
+
+def test_meeting_is_complete_once_its_audio_has_stopped_changing():
+    """superwhisper stops writing the audio a moment before the final meta.json."""
+    rec = _recording(
+        **FINISHED_MEETING_META, meta_mtime=1000.0, audio_file="output.ogg", audio_mtime=999.0
+    )
+    assert is_complete(rec, now=999.0 + 301)
+
+
+@pytest.mark.parametrize(
+    "meta, now",
+    [
+        pytest.param(FINISHED_MEETING_META, 1000.0 + 5, id="meeting-with-summary"),
+        pytest.param(LIVE_MEETING_META, 1000.0 + 7201, id="meeting-summary-never-came"),
+        pytest.param(
+            {**MEETING_META, "kind": "dictation", "modeName": "Default"},
+            1000.0 + 601,
+            id="settled-dictation",
+        ),
+        pytest.param(ABANDONED_META, 1000.0 + 7201, id="empty-transcript"),
+    ],
+)
+def test_audio_written_moments_ago_holds_back_every_kind_of_recording(meta, now):
+    """Each of these counts as finished on meta.json alone; recent audio overrides that."""
+    assert is_complete(_recording(**meta, meta_mtime=1000.0), now=now)
+
+    rec = _recording(**meta, meta_mtime=1000.0, audio_file="output.ogg", audio_mtime=now - 20)
+    assert not is_complete(rec, now=now)
+
+
+def test_scan_holds_back_a_recording_whose_audio_is_still_being_written(tmp_path):
+    """The scanner reads the audio file's own mtime, not only meta.json's."""
+    _create_recording(tmp_path, "1793811621", FINISHED_MEETING_META)
+    audio = tmp_path / "1793811621" / "output.ogg"
+    audio.write_bytes(b"")  # written just now
+    scanner = Scanner(str(tmp_path))
+
+    still_recording = scanner.scan()
+    assert still_recording.recordings == []
+    assert still_recording.skipped_incomplete == 1
+
+    _settle(audio)
+    assert [r.source_dir for r in scanner.scan().recordings] == ["1793811621"]
