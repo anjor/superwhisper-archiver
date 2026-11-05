@@ -277,6 +277,7 @@ see which apps are using the microphone.
 ## Development
 
 ```sh
+uv sync --extra dev    # pytest and ruff are in the dev extra
 uv run pytest tests/ -v
 uv run ruff check .
 ```
