@@ -86,7 +86,7 @@ group is done only when every one of its recordings is.
 
 Recording timestamps in `meta.json` are UTC and are stored as-is.
 
-## Waiting for meta.json to settle
+## Knowing when a meeting has ended
 
 superwhisper 3.0 detects meetings by itself and, unlike 2.x, writes the
 transcript into `meta.json` *while the meeting is still going* — duration,
@@ -95,12 +95,20 @@ longer means a recording has ended. Treating it as if it did is how the first
 3.0 meeting, 25 minutes long, was archived 11 minutes in and then never
 revisited, since an archived recording is not looked at again.
 
-So a transcript counts as final only once `meta.json` has gone untouched for
-`scanner.SETTLE_SECONDS` (10 minutes). That is far longer than any observed
-gap between writes during a meeting, and with a 15-minute schedule it delays
-a note by at most one run. It applies to every recording, not just 3.0
-meetings, so a change in how superwhisper writes the file cannot reopen the
-same hole.
+What does mark the end is the summary. superwhisper writes `llmResult`, along
+with the meeting's `title`, only into the final `meta.json`, a few seconds
+after the meeting ends (when you click End meeting). So a meeting counts as
+finished once `llmResult` is there, and is archived on the next run. How long
+the file has gone unchanged is deliberately not used for meetings: a meeting
+can go quiet for longer than any fixed wait, and nothing guarantees that
+superwhisper touches the file while nobody speaks. If the summary never
+arrives, the meeting is archived without it once `meta.json` has gone
+untouched for `scanner.TRANSCRIPTION_GRACE_SECONDS` (two hours).
+
+Recordings that are not meetings get their transcript in a single write at
+the end. As a precaution they still count as finished only once `meta.json`
+has gone untouched for `scanner.SETTLE_SECONDS` (10 minutes), so a change in
+how superwhisper writes the file cannot reopen the same hole.
 
 ## When transcription comes back empty
 

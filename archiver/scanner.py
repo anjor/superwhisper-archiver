@@ -17,15 +17,15 @@ logger = logging.getLogger(__name__)
 # for a failure rather than for work still in progress. Transcription runs
 # well after the audio stops — a long meeting has been observed finishing 16
 # minutes later — so the wait is generous. The archiver runs every 15 minutes,
-# so waiting costs nothing but the delay.
+# so waiting costs nothing but the delay. It is also how long a meeting waits
+# for a summary that never comes.
 TRANSCRIPTION_GRACE_SECONDS = 7200
 
-# How long meta.json must sit untouched before a transcript is taken for the
-# final one. superwhisper 3.0 writes a meeting's transcript into meta.json
-# while the meeting is still going, rewriting it every few seconds, so a
-# non-empty transcript alone no longer means the recording has ended. Ten
-# minutes is far longer than any observed gap between writes, and with a
-# 15-minute schedule it delays a note by at most one run.
+# How long meta.json must sit untouched before the transcript of a recording
+# that is not a meeting is taken for the final one. superwhisper writes those
+# transcripts once, at the end, so this is a precaution: should a later version
+# write them as it goes, as 3.0 does for meetings, a note is still not cut
+# short. With a 15-minute schedule it delays a note by at most one run.
 SETTLE_SECONDS = 600
 
 
@@ -70,9 +70,16 @@ def is_complete(
     The recording directory and a meta.json appear within seconds of a
     recording starting. superwhisper 2.x left the transcript empty until the
     end; 3.0 fills it in as a meeting goes. Either way, archiving early would
-    commit a partial note and mark it done forever, so a recording counts as
-    finished only once meta.json has stopped changing for ``settle_seconds``.
-    An unfinished recording is passed over and reconsidered on a later run.
+    commit a partial note and mark it done forever, so an unfinished recording
+    is passed over and reconsidered on a later run.
+
+    A meeting is finished once superwhisper has written its summary
+    (``llmResult``), which it does only in the final meta.json, seconds after
+    the meeting ends. How long the file has gone unchanged proves nothing for a
+    meeting, which can go quiet for longer than any settle period. Should the
+    summary never come, the meeting is archived without it after
+    ``grace_seconds``. Any other recording is finished once meta.json has
+    stopped changing for ``settle_seconds``.
 
     "Done" includes a transcription that came back empty and is never going to
     fill in. That is a terminal state, and admitting it is what keeps the
@@ -82,9 +89,11 @@ def is_complete(
         return False
     if now is None:
         now = time.time()
-    if has_transcript(recording):
-        return (now - recording.meta_mtime) > settle_seconds
-    return transcription_failed(recording, now=now, grace_seconds=grace_seconds)
+    if not has_transcript(recording):
+        return transcription_failed(recording, now=now, grace_seconds=grace_seconds)
+    if recording.kind == "meeting":
+        return recording.llmResult is not None or (now - recording.meta_mtime) > grace_seconds
+    return (now - recording.meta_mtime) > settle_seconds
 
 
 def find_audio_file(recording_dir: Path) -> Optional[str]:
