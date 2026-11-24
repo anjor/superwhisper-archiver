@@ -1,10 +1,13 @@
 """SQLite-based state tracker for archived recordings."""
 
+import json
 import sqlite3
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
+
+from .models import LocalTranscript
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +52,17 @@ class StateTracker:
                     first_failed_at TEXT NOT NULL,
                     last_error TEXT,
                     attempts INTEGER NOT NULL DEFAULT 1
+                )
+            """)
+            # Transcripts the archiver made itself, kept so that rewriting a
+            # note, as when a new recording joins its group, does not mean
+            # transcribing the audio again.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS local_transcripts (
+                    source_dir TEXT PRIMARY KEY,
+                    model TEXT NOT NULL,
+                    segments TEXT NOT NULL,
+                    transcribed_at TEXT NOT NULL
                 )
             """)
             conn.commit()
@@ -151,6 +165,40 @@ class StateTracker:
                 source_dirs,
             )
             return {row[0] for row in cursor.fetchall() if row[0]}
+
+    def save_local_transcript(self, source_dir: str, transcript: LocalTranscript):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO local_transcripts
+                    (source_dir, model, segments, transcribed_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    source_dir,
+                    transcript.model,
+                    json.dumps([s.model_dump() for s in transcript.segments]),
+                    datetime.now().isoformat(),
+                ),
+            )
+            conn.commit()
+
+    def get_local_transcripts(self, source_dirs) -> Dict[str, LocalTranscript]:
+        source_dirs = list(source_dirs)
+        if not source_dirs:
+            return {}
+        placeholders = ",".join("?" * len(source_dirs))
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"SELECT source_dir, model, segments FROM local_transcripts "
+                f"WHERE source_dir IN ({placeholders})",
+                source_dirs,
+            )
+            return {
+                source_dir: LocalTranscript(model=model, segments=json.loads(segments))
+                for source_dir, model, segments in cursor.fetchall()
+            }
 
     def record_failure(self, source_dir: str, error: Optional[str] = None):
         """Note that a recording failed to archive, incrementing its attempt count."""

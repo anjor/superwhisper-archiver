@@ -33,6 +33,10 @@ grouping:
     super: 60
   default_gap_seconds: 60
 
+# The faster-whisper model that transcribes the audio when superwhisper returns no transcript.
+local_transcription:
+  model: distil-large-v3
+
 logging:
   level: INFO
   file: /tmp/superwhisper-archiver.log

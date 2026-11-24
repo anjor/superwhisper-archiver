@@ -15,6 +15,15 @@ class Segment(BaseModel):
     confidence: Optional[float] = None
 
 
+class LocalTranscript(BaseModel):
+    model: str
+    segments: List[Segment] = Field(default_factory=list)
+
+    @property
+    def text(self) -> str:
+        return " ".join(s.text for s in self.segments)
+
+
 class SpeakerName(BaseModel):
     """superwhisper 3.0's name for one diarized speaker id in a recording.
 
@@ -63,6 +72,7 @@ class Recording(BaseModel):
     # superwhisper 2.x saved output.wav and 3.0 saves output.ogg; some
     # recordings keep no audio at all.
     audio_file: Optional[str] = None
+    local_transcription_model: Optional[str] = None
 
     class Config:
         extra = "ignore"
@@ -77,6 +87,31 @@ class Recording(BaseModel):
         if self.result.strip() or self.rawResult.strip():
             return True
         return bool(self.segments)
+
+    @property
+    def needs_local_transcription(self) -> bool:
+        """A recording already transcribed locally is done even if that came back
+        empty, or a silent recording would be transcribed again on every run.
+        """
+        return (
+            not self.has_transcript
+            and self.audio_file is not None
+            and self.local_transcription_model is None
+        )
+
+    def with_local_transcript(self, transcript: LocalTranscript) -> "Recording":
+        """superwhisper's summary is dropped: with no transcript, it summarised
+        nothing.
+        """
+        return self.model_copy(
+            update={
+                "result": transcript.text,
+                "rawResult": transcript.text,
+                "segments": transcript.segments,
+                "llmResult": None,
+                "local_transcription_model": transcript.model,
+            }
+        )
 
     def speaker_label(self, speaker: int) -> str:
         """The speaker's name if superwhisper knows it, else their number."""
@@ -149,6 +184,10 @@ class RecordingGroup(BaseModel):
         return [r for r in self.recordings if not r.has_transcript]
 
     @property
+    def locally_transcribed_recordings(self) -> List[Recording]:
+        return [r for r in self.recordings if r.local_transcription_model is not None]
+
+    @property
     def diarized_recordings(self) -> List[Recording]:
         return [r for r in self.recordings if any(s.speaker is not None for s in r.segments)]
 
@@ -215,6 +254,9 @@ class ArchiverConfig(BaseModel):
         def gap_for(self, mode: str) -> int:
             return self.gap_seconds.get(mode.lower(), self.default_gap_seconds)
 
+    class LocalTranscriptionConfig(BaseModel):
+        model: str = "distil-large-v3"
+
     class LoggingConfig(BaseModel):
         level: str = "INFO"
         file: str = "/tmp/superwhisper-archiver.log"
@@ -223,6 +265,9 @@ class ArchiverConfig(BaseModel):
     archive: ArchiveConfig
     filters: FiltersConfig
     grouping: GroupingConfig = Field(default_factory=lambda: ArchiverConfig.GroupingConfig())
+    local_transcription: LocalTranscriptionConfig = Field(
+        default_factory=lambda: ArchiverConfig.LocalTranscriptionConfig()
+    )
     logging: LoggingConfig
 
 

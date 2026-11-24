@@ -1,6 +1,7 @@
 import json
 import os
 import time
+import wave
 from pathlib import Path
 
 from archiver.models import Recording
@@ -400,3 +401,67 @@ def test_scan_reports_abandoned_transcriptions(tmp_path):
     result = Scanner(str(tmp_path)).scan()
 
     assert result.transcription_failed == 1
+
+
+# What superwhisper 3.0 writes when it cannot reach its cloud API: the meeting
+# ends and gets a summary, but meta.json has no transcript and a duration of 0.
+# The audio is still on disk.
+OFFLINE_MEETING_META = {
+    **LIVE_MEETING_META,
+    "datetime": "2026-11-24T09:00:00",
+    "duration": 0,
+    "result": "",
+    "rawResult": "",
+    "segments": [],
+    "llmResult": "Not enough was said in this meeting to summarize.",
+}
+
+
+def _write_silence(path: Path, seconds: int = 70, rate: int = 8000):
+    with wave.open(str(path), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(rate)
+        audio.writeframes(b"\0\0" * rate * seconds)
+
+
+def test_offline_meeting_is_complete_with_the_length_of_its_audio(tmp_path):
+    _create_recording(tmp_path, "1795000000", OFFLINE_MEETING_META)
+    _write_silence(tmp_path / "1795000000" / "output.wav")
+
+    result = Scanner(str(tmp_path)).scan()
+
+    assert [(r.source_dir, r.duration) for r in result.recordings] == [("1795000000", 70000)]
+
+
+def test_offline_meeting_without_audio_stays_incomplete(tmp_path):
+    _create_recording(tmp_path, "1795000000", OFFLINE_MEETING_META)
+
+    result = Scanner(str(tmp_path)).scan()
+
+    assert result.recordings == []
+    assert result.skipped_incomplete == 1
+
+
+def test_unreadable_audio_leaves_the_duration_unknown(tmp_path):
+    _create_recording(tmp_path, "1795000000", OFFLINE_MEETING_META)
+    (tmp_path / "1795000000" / "output.ogg").write_bytes(b"not audio")
+
+    result = Scanner(str(tmp_path)).scan()
+
+    assert result.recordings == []
+    assert result.skipped_incomplete == 1
+    assert result.failed_to_parse == 0
+
+
+def test_summarised_meeting_with_no_transcript_is_complete_at_once():
+    rec = _recording(**{**OFFLINE_MEETING_META, "duration": 70000}, meta_mtime=1000.0)
+    assert is_complete(rec, now=1000.0 + 5)
+
+
+def test_unsummarised_meeting_with_no_transcript_still_waits_out_the_grace_period():
+    rec = _recording(
+        **{**OFFLINE_MEETING_META, "duration": 70000, "llmResult": None}, meta_mtime=1000.0
+    )
+    assert not is_complete(rec, now=1000.0 + 600)
+    assert is_complete(rec, now=1000.0 + 7201)

@@ -1,5 +1,5 @@
 from archiver.markdown_formatter import MarkdownFormatter
-from archiver.models import Recording, RecordingGroup
+from archiver.models import LocalTranscript, Recording, RecordingGroup, Segment
 
 
 def _make_recording(**overrides) -> Recording:
@@ -251,3 +251,56 @@ def test_partly_failed_group_does_not_list_the_parts_that_worked():
     md = MarkdownFormatter().format_group(_group(good, bad))
     assert "1788338291/output.wav" in md
     assert "1788338239/output.wav" not in md
+
+
+def _locally_transcribed(**overrides) -> Recording:
+    empty = _failed_recording(
+        audio_file="output.ogg",
+        llmResult="Not enough was said in this meeting to summarize.",
+        **overrides,
+    )
+    return empty.with_local_transcript(
+        LocalTranscript(
+            model="distil-large-v3",
+            segments=[Segment(text="Shall we start?", start=0.5, end=2.0)],
+        )
+    )
+
+
+def test_locally_transcribed_note_carries_the_local_text():
+    md = _format(_locally_transcribed())
+    assert "Shall we start?" in md.split("## Transcription\n", 1)[1]
+    assert "transcription_failed" not in md
+    assert "Transcription Failed" not in md
+
+
+def test_locally_transcribed_note_says_where_its_text_came_from():
+    md = _format(_locally_transcribed())
+    assert 'local_transcription_model: "distil-large-v3"' in md
+    assert "local_transcription_parts" not in md
+    assert md.index("## Transcribed Locally") < md.index("## Transcription\n")
+    notice = md.split("## Transcribed Locally", 1)[1].split("##", 1)[0]
+    assert "faster-whisper (`distil-large-v3`)" in notice
+    assert "no speaker labels" in notice
+
+
+def test_locally_transcribed_note_drops_the_summary_of_nothing():
+    assert "## Summary" not in _format(_locally_transcribed())
+
+
+def test_group_says_which_parts_were_transcribed_locally():
+    good = _make_recording(source_dir="a", datetime="2026-02-13T10:31:50")
+    local = _locally_transcribed(source_dir="b", datetime="2026-02-13T10:32:30")
+    md = _format(good, local)
+    assert "local_transcription_parts: 1" in md
+    assert "part 2 of this note" in md
+
+
+def test_empty_local_transcript_still_reads_as_a_failed_transcription():
+    silent = _failed_recording(audio_file="output.ogg").with_local_transcript(
+        LocalTranscript(model="distil-large-v3")
+    )
+    md = _format(silent)
+    assert "transcription_failed: true" in md
+    assert "## Transcription Failed" in md
+    assert 'local_transcription_model: "distil-large-v3"' in md

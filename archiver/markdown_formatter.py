@@ -52,6 +52,13 @@ class MarkdownFormatter:
         elif group.untranscribed_recordings:
             parts.append(f"transcription_failed_parts: {len(group.untranscribed_recordings)}")
 
+        if group.locally_transcribed_recordings:
+            parts.append(f'local_transcription_model: "{self._local_models(group)}"')
+            if len(group.recordings) > 1:
+                parts.append(
+                    f"local_transcription_parts: {len(group.locally_transcribed_recordings)}"
+                )
+
         if len(group.recordings) == 1:
             parts.append(f'source_dir: "{rec.source_dir}"')
         else:
@@ -80,6 +87,9 @@ class MarkdownFormatter:
 
         if group.untranscribed_recordings:
             parts.append(self._build_failure_notice(group))
+
+        if group.locally_transcribed_recordings:
+            parts.append(self._build_local_notice(group))
 
         transcription = self._build_transcription(group)
         if transcription:
@@ -135,6 +145,31 @@ class MarkdownFormatter:
             f"{lead} The audio is still on disk, under the superwhisper "
             "recordings directory:\n\n"
             f"{audio}\n"
+        )
+
+    def _build_local_notice(self, group: RecordingGroup) -> str:
+        if len(group.recordings) == 1:
+            subject = "this recording"
+        else:
+            *rest, last = [
+                str(group.recordings.index(r) + 1) for r in group.locally_transcribed_recordings
+            ]
+            if rest:
+                subject = f"parts {', '.join(rest)} and {last} of this note"
+            else:
+                subject = f"part {last} of this note"
+        return (
+            "## Transcribed Locally\n\n"
+            f"superwhisper returned no transcript for {subject}, so the archiver "
+            "transcribed the audio on this Mac with faster-whisper "
+            f"(`{self._local_models(group)}`). A local transcript has no speaker "
+            "labels and no summary.\n"
+        )
+
+    @staticmethod
+    def _local_models(group: RecordingGroup) -> str:
+        return ", ".join(
+            dict.fromkeys(r.local_transcription_model for r in group.locally_transcribed_recordings)
         )
 
     def _build_transcription(self, group: RecordingGroup) -> str:

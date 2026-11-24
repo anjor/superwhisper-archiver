@@ -1,3 +1,4 @@
+from archiver.models import LocalTranscript, Segment
 from archiver.state_tracker import StateTracker
 
 
@@ -125,3 +126,39 @@ def test_failures_are_ordered_by_first_failure(tmp_path):
     tracker.record_failure("older", "boom")
     tracker.record_failure("newer", "boom")
     assert [f["source_dir"] for f in tracker.get_failures()] == ["older", "newer"]
+
+
+def test_local_transcript_round_trips(tmp_path):
+    tracker = StateTracker(str(tmp_path / "test.db"))
+    transcript = LocalTranscript(
+        model="distil-large-v3",
+        segments=[
+            Segment(text="Shall we start?", start=0.5, end=2.0),
+            Segment(text="Yes.", start=2.4, end=2.9),
+        ],
+    )
+    tracker.save_local_transcript("1795000000", transcript)
+
+    loaded = tracker.get_local_transcripts(["1795000000", "never-transcribed"])
+
+    assert loaded == {"1795000000": transcript}
+
+
+def test_empty_local_transcript_round_trips(tmp_path):
+    """A silent recording's empty transcript is still a result worth keeping."""
+    tracker = StateTracker(str(tmp_path / "test.db"))
+    tracker.save_local_transcript("1795000000", LocalTranscript(model="distil-large-v3"))
+    loaded = tracker.get_local_transcripts(["1795000000"])
+    assert loaded["1795000000"].segments == []
+
+
+def test_saving_a_local_transcript_again_replaces_it(tmp_path):
+    tracker = StateTracker(str(tmp_path / "test.db"))
+    tracker.save_local_transcript("dir1", LocalTranscript(model="old"))
+    tracker.save_local_transcript("dir1", LocalTranscript(model="new"))
+    assert tracker.get_local_transcripts(["dir1"])["dir1"].model == "new"
+
+
+def test_get_local_transcripts_is_empty_for_no_input(tmp_path):
+    tracker = StateTracker(str(tmp_path / "test.db"))
+    assert tracker.get_local_transcripts([]) == {}
