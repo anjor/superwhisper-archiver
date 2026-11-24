@@ -4,21 +4,30 @@ import argparse
 import logging
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, List, Optional, Set
 
 import yaml
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.table import Table
 
-from .models import ArchiverConfig, ArchiveResult, ArchiveSummary, RecordingGroup
+from .models import (
+    ArchiverConfig,
+    ArchiveResult,
+    ArchiveSummary,
+    LocalTranscript,
+    Recording,
+    RecordingGroup,
+)
 from .scanner import Scanner, group_recordings, qualifies
 from .markdown_formatter import MarkdownFormatter
 from .git_manager import GitManager
 from .notifications import notify_macos
 from .state_tracker import StateTracker
+from .transcriber import LocalTranscriber
 
 console = Console()
 
@@ -166,24 +175,88 @@ def record_archive_outcome(
         state_tracker.record_failure(source_dir, result.error)
 
 
+def select_pending(
+    groups: List[RecordingGroup],
+    filters: ArchiverConfig.FiltersConfig,
+    archived: Set[str],
+) -> List[RecordingGroup]:
+    """The qualifying groups whose note needs writing or rewriting.
+
+    A group is done only when all of its recordings are archived, so a new
+    recording joining an archived group rewrites the note to include it. So
+    does a recording that still needs a local transcript, which is how a note
+    archived without a transcript gets one.
+    """
+    return [
+        group
+        for group in groups
+        if qualifies(group, filters)
+        and any(
+            r.source_dir not in archived or r.needs_local_transcription
+            for r in group.recordings
+        )
+    ]
+
+
+def with_cached_transcripts(
+    recordings: List[Recording], state_tracker: StateTracker
+) -> List[Recording]:
+    """Fill in the archiver's own transcripts where superwhisper left none.
+
+    A note rewritten later, as when a new recording joins its group, then
+    keeps its text without transcribing the audio again.
+    """
+    cached = state_tracker.get_local_transcripts(
+        r.source_dir for r in recordings if not r.has_transcript
+    )
+    return [
+        r.with_local_transcript(cached[r.source_dir]) if r.source_dir in cached else r
+        for r in recordings
+    ]
+
+
 def archive_group(
     group: RecordingGroup,
     formatter: MarkdownFormatter,
     git_manager: GitManager,
     state_tracker: StateTracker,
+    transcribe: Callable[[Recording], LocalTranscript],
     dry_run: bool = False,
 ) -> ArchiveResult:
     logger = logging.getLogger(__name__)
     source_dir = group.primary.source_dir
 
     try:
+        to_transcribe = [r for r in group.recordings if r.needs_local_transcription]
+        transcripts = {}
+        if not dry_run:
+            for rec in to_transcribe:
+                logger.info(
+                    f"Transcribing {rec.source_dir} locally: "
+                    f"{rec.duration / 60000:.0f} min of audio"
+                )
+                started = time.monotonic()
+                transcripts[rec.source_dir] = transcribe(rec)
+                logger.info(
+                    f"Transcribed {rec.source_dir} in {time.monotonic() - started:.0f}s"
+                )
+            group = RecordingGroup(
+                recordings=[
+                    r.with_local_transcript(transcripts[r.source_dir])
+                    if r.source_dir in transcripts
+                    else r
+                    for r in group.recordings
+                ]
+            )
+
         markdown = formatter.format_group(group)
         file_path = formatter.compute_file_path(group)
 
         if dry_run:
             parts = f" ({len(group.recordings)} recordings)" if len(group.recordings) > 1 else ""
+            local = f", transcribing {len(to_transcribe)} locally" if to_transcribe else ""
             console.print(
-                f"[yellow]DRY RUN: Would archive {source_dir}{parts} to {file_path}[/yellow]"
+                f"[yellow]DRY RUN: Would archive {source_dir}{parts} to {file_path}{local}[/yellow]"
             )
             return ArchiveResult(success=True, source_dir=source_dir, file_path=file_path)
 
@@ -203,6 +276,11 @@ def archive_group(
 
         if not commit_sha:
             raise Exception("Failed to commit recording")
+
+        # Only now: a transcript saved before a failed commit would mark the
+        # recording done, and its note would never be rewritten.
+        for rec_dir, transcript in transcripts.items():
+            state_tracker.save_local_transcript(rec_dir, transcript)
 
         # Every member points at the shared note, so a later recording joining
         # this group rewrites that note rather than starting a new one.
@@ -262,22 +340,27 @@ def run_archiver(
     if scan.skipped_incomplete:
         logger.info(f"{scan.skipped_incomplete} recording(s) not yet finalised; will retry")
 
-    archived = state_tracker.get_archived_source_dirs()
-    pending = []
-    for group in group_recordings(scan.recordings, config.grouping):
-        if not qualifies(group, filters):
-            scan.skipped_filtered += 1
-            continue
-        # A group is done only when all of its recordings are; if a new one
-        # has joined an archived group, the note is rewritten to include it.
-        if all(source_dir in archived for source_dir in group.source_dirs):
-            scan.skipped_archived += 1
-            continue
-        pending.append(group)
+    recordings = with_cached_transcripts(scan.recordings, state_tracker)
+    groups = group_recordings(recordings, config.grouping)
+    pending = select_pending(groups, filters, state_tracker.get_archived_source_dirs())
+    qualifying = sum(1 for group in groups if qualifies(group, filters))
+    scan.skipped_filtered += len(groups) - qualifying
+    scan.skipped_archived += qualifying - len(pending)
+
+    transcriber = LocalTranscriber(config.local_transcription.model)
+    recordings_path = Path(config.superwhisper.recordings_path)
+
+    def transcribe(recording: Recording) -> LocalTranscript:
+        return transcriber(
+            recordings_path / recording.source_dir / recording.audio_file,
+            recording.languageSelected or None,
+        )
 
     results = []
     for group in pending:
-        result = archive_group(group, formatter, git_manager, state_tracker, dry_run)
+        result = archive_group(
+            group, formatter, git_manager, state_tracker, transcribe, dry_run
+        )
         record_archive_outcome(state_tracker, group.primary.source_dir, result, dry_run)
         results.append(result)
 
