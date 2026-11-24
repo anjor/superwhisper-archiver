@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .models import ArchiverConfig, Recording, RecordingGroup, ScanResult
+from .transcriber import audio_duration_ms
 
 logger = logging.getLogger(__name__)
 
@@ -75,10 +76,11 @@ def is_complete(
 
     A meeting is finished once superwhisper has written its summary
     (``llmResult``), which it does only in the final meta.json, seconds after
-    the meeting ends. How long the file has gone unchanged proves nothing for a
-    meeting, which can go quiet for longer than any settle period. Should the
-    summary never come, the meeting is archived without it after
-    ``grace_seconds``. Any other recording is finished once meta.json has
+    the meeting ends. That holds even when the transcript is empty: superwhisper
+    summarises an empty meeting too. How long the file has gone unchanged
+    proves nothing for a meeting, which can go quiet for longer than any settle
+    period. Should the summary never come, the meeting is archived without it
+    after ``grace_seconds``. Any other recording is finished once meta.json has
     stopped changing for ``settle_seconds``.
 
     "Done" includes a transcription that came back empty and is never going to
@@ -87,12 +89,14 @@ def is_complete(
     """
     if not recording.datetime or recording.duration <= 0:
         return False
+    if recording.kind == "meeting" and recording.llmResult is not None:
+        return True
     if now is None:
         now = time.time()
     if not has_transcript(recording):
         return transcription_failed(recording, now=now, grace_seconds=grace_seconds)
     if recording.kind == "meeting":
-        return recording.llmResult is not None or (now - recording.meta_mtime) > grace_seconds
+        return (now - recording.meta_mtime) > grace_seconds
     return (now - recording.meta_mtime) > settle_seconds
 
 
@@ -212,6 +216,7 @@ class Scanner:
                 meta = json.loads(meta_path.read_text())
                 meta.pop("meta_mtime", None)
                 meta.pop("audio_file", None)
+                meta.pop("local_transcription_model", None)
                 recording = Recording(
                     source_dir=entry.name,
                     meta_mtime=meta_path.stat().st_mtime,
@@ -223,6 +228,14 @@ class Scanner:
                 result.failed_to_parse += 1
                 continue
 
+            # When its cloud transcription fails, superwhisper can finish a
+            # recording with duration 0 in meta.json. The audio still knows.
+            if recording.duration <= 0 and recording.audio_file:
+                try:
+                    recording.duration = audio_duration_ms(entry / recording.audio_file)
+                except Exception as e:
+                    logger.debug(f"Could not read the length of {entry.name}'s audio: {e}")
+
             if not is_complete(recording):
                 logger.debug(f"Skipping {entry.name}: still recording or not yet finalised")
                 result.skipped_incomplete += 1
@@ -231,8 +244,7 @@ class Scanner:
             if not has_transcript(recording):
                 logger.warning(
                     f"{entry.name}: superwhisper finished a "
-                    f"{recording.duration // 60000}m recording but transcribed nothing; "
-                    f"archiving it as a failed transcription"
+                    f"{recording.duration // 60000}m recording but transcribed nothing"
                 )
                 result.transcription_failed += 1
 
