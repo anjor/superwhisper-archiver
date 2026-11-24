@@ -104,3 +104,20 @@ def test_write_and_commit_preserves_fresh_lock(repo_dir):
 
     assert sha is None, "should not commit over a fresh lock"
     assert fresh_lock.exists(), "fresh lock must be left intact"
+
+
+def test_write_and_commit_leaves_other_staged_changes_alone(repo_dir):
+    """The notes repo is edited by hand too. An archive commit holds only its note."""
+    root = Path(repo_dir)
+    repo = Repo(repo_dir)
+    (root / "README.md").write_text("edited by hand")
+    repo.git.add("README.md")
+    (root / "summary.md").write_text("a daily summary")
+    repo.git.add("--intent-to-add", "summary.md")
+
+    sha = GitManager(repo_dir).write_and_commit("2026/01/note.md", "hello", "Archive: note")
+
+    assert sha
+    assert list(repo.commit(sha).stats.files) == ["2026/01/note.md"]
+    assert "README.md" in repo.git.diff("--cached", "--name-only")
+    assert (root / "summary.md").read_text() == "a daily summary"

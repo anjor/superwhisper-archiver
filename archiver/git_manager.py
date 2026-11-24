@@ -100,12 +100,14 @@ class GitManager:
             return self._do_commit(file_path, commit_message, removed_paths)
 
     def _do_commit(self, file_path: str, commit_message: str, removed_paths) -> str:
-        self.repo.index.add([file_path])
-        if removed_paths:
-            self.repo.index.remove(removed_paths, working_tree=False, r=True)
-        commit = self.repo.index.commit(commit_message)
-        logger.info(f"Committed {file_path} with SHA {commit.hexsha[:8]}")
-        return commit.hexsha
+        # `--only` keeps anything else staged in the notes repo out of the
+        # archive commit and leaves it staged.
+        paths = [file_path, *removed_paths]
+        self.repo.git.add("--all", "--", *paths)
+        self.repo.git.commit("--only", "-m", commit_message, "--", *paths)
+        sha = self.repo.head.commit.hexsha
+        logger.info(f"Committed {file_path} with SHA {sha[:8]}")
+        return sha
 
     def _clear_stale_lock(self) -> bool:
         """Remove the repo's index.lock if it is stale.
