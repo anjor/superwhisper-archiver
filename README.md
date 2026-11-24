@@ -233,8 +233,8 @@ Treating a finished, empty recording as one still in flight is how a finished
 without ever appearing in the archive or in an error.
 
 Then, before writing the note, the archiver transcribes each part that has
-audio and no transcript. This is slow. On this Mac faster-whisper runs about
-7 times faster than real time, so an hour-long meeting takes about 9 minutes.
+audio and no transcript. This is slow. On an M1 Pro, faster-whisper ran 7 to 9
+times faster than real time, so an hour-long meeting takes 7 to 9 minutes.
 The note says where its text came from: `local_transcription_model` in the
 frontmatter, `local_transcription_parts` too for a grouped note, and a
 `## Transcribed Locally` section. A local transcript has no speaker labels.
@@ -246,10 +246,11 @@ its group, reuses it instead of transcribing again. A recording counts as
 transcribed even when faster-whisper found no speech in it, so a silent
 recording is not transcribed again on every run.
 
-Notes archived before the archiver could transcribe get the same treatment.
-A group stays pending while any of its recordings still needs a local
-transcript, so each old stub note is rewritten in place. The first run after
-the upgrade transcribes all of them, and can take a long time.
+Notes archived before the archiver could transcribe get the same treatment,
+as long as their audio is still on disk. A group stays pending while any of
+its recordings still needs a local transcript, so such a stub note is
+rewritten in place. superwhisper does not always keep that audio: none of the
+stub notes written before this change had any left.
 
 The model loads from the Hugging Face cache (`~/.cache/huggingface/hub`)
 without going online, since the archiver runs exactly when the network is
