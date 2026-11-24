@@ -16,9 +16,11 @@ schedule.
 3. Every 15 minutes the archiver picks up each finished recording it has not
    archived yet, writes it as a note in the notes repo (`archive.repo_path`,
    currently `granola-notes`, a name left over from the Granola-based
-   archiver this one replaced), commits, and pushes.
+   archiver this one replaced), commits, and pushes. If superwhisper
+   returned no transcript, the archiver first transcribes the audio itself.
 
-So a meeting's note appears within 15 minutes of clicking End meeting.
+So a meeting's note appears within 15 minutes of clicking End meeting, or
+later when the archiver has to transcribe it.
 
 ## Usage
 
@@ -62,14 +64,15 @@ Where things live:
   `~/.config/superwhisper-archiver/config.yaml` exists, this is the live
   config.
 - **State:** `state/archive_state.db` (git-ignored). `archived_recordings`
-  records what has been archived, and `failed_recordings` what keeps failing.
+  records what has been archived, `failed_recordings` what keeps failing, and
+  `local_transcripts` the transcripts the archiver made itself.
 - **Logs:** `/tmp/superwhisper-archiver.log`, plus the agent's own output in
   `/tmp/superwhisper-archiver-stdout.log` and
   `/tmp/superwhisper-archiver-stderr.log`.
 
 ## Configuration
 
-`config.yaml` has five sections:
+`config.yaml` has six sections:
 
 - `superwhisper.recordings_path`: where superwhisper keeps its recordings.
 - `archive`: the notes repo (`repo_path`), and the remote and branch it
@@ -78,6 +81,9 @@ Where things live:
   [What gets archived](#what-gets-archived).
 - `grouping`: how close together recordings must be to share a note. See
   [One note per conversation](#one-note-per-conversation-not-per-recording).
+- `local_transcription.model`: the faster-whisper model that transcribes a
+  recording superwhisper returned no transcript for. See
+  [When transcription comes back empty](#when-transcription-comes-back-empty).
 - `logging`: log level and file.
 
 ## What gets archived
@@ -108,7 +114,8 @@ where known, and which recording directories it came from. The body has:
   recordings. See [Diarization](#diarization).
 - `## Segments`: every segment with its timestamps.
 
-A recording whose transcription failed gets a note saying so instead. See
+When superwhisper returned no transcript, the archiver transcribes the audio
+itself and the note says so. See
 [When transcription comes back empty](#when-transcription-comes-back-empty).
 
 ## One note per conversation, not per recording
@@ -195,28 +202,70 @@ how superwhisper writes the file cannot reopen the same hole.
 
 ## When transcription comes back empty
 
-A recording can finish and still have no transcript: superwhisper writes the
-real `duration` but its cloud transcription returns nothing — sometimes
-literally a few spaces in `rawResult`. On disk that is indistinguishable from
-a recording still in flight, and treating the two the same way is how a
-finished 31-minute meeting gets skipped as "not yet finalised" on every run
-forever, without ever appearing in the archive or in an error.
+A recording can finish and still have no transcript. superwhisper transcribes
+in its cloud, so when the network blocks its API, a recording ends with the
+audio on disk and nothing else: an empty `rawResult` (sometimes a few spaces),
+no segments, and for a 3.0 meeting a summary that says "Not enough was said in
+this meeting to summarize." Some of these meetings even have `duration: 0` in
+`meta.json`.
 
-The tell is `meta.json`'s mtime. Once the file has sat untouched for
-`scanner.TRANSCRIPTION_GRACE_SECONDS` (two hours) and the transcript is still
-empty, no transcript is coming. The wait is deliberately generous:
-transcription runs well after the audio stops (by 16 minutes for one observed
-meeting), and nothing guarantees that superwhisper touches the file while
-nobody is speaking. Since the archiver runs every 15 minutes, waiting costs
-nothing but the delay.
+The archiver transcribes that audio itself, on this Mac, with
+[faster-whisper](https://github.com/SYSTRAN/faster-whisper) and the model
+named in `local_transcription.model`.
 
-Such a recording is then archived as a **stub note**: the usual frontmatter
-plus `transcription_failed: true`, and a body saying what happened and where
-the audio still is — `output.wav` from 2.x, `output.ogg` from 3.0, whichever
-the recording directory actually holds. That keeps the record that the
-conversation happened, lets you re-transcribe from the audio it points at,
-and — because the note is committed — stops the recording being retried
-forever.
+First it has to see that the recording is finished:
+
+- A `duration` of 0 normally means superwhisper is still recording. When the
+  recording directory holds audio, the scanner reads the length from the audio
+  file instead.
+- A meeting is finished once superwhisper has written its summary, even when
+  the transcript is empty. See [Knowing when a meeting has ended](#knowing-when-a-meeting-has-ended).
+- Any other recording with an empty transcript looks exactly like one still
+  being written. The tell is `meta.json`'s mtime. Once the file has sat
+  untouched for `scanner.TRANSCRIPTION_GRACE_SECONDS` (two hours) and the
+  transcript is still empty, no transcript is coming. The wait is deliberately
+  generous: transcription runs well after the audio stops (by 16 minutes for
+  one observed meeting), and nothing guarantees that superwhisper touches the
+  file while nobody is speaking.
+
+Treating a finished, empty recording as one still in flight is how a finished
+31-minute meeting gets skipped as "not yet finalised" on every run forever,
+without ever appearing in the archive or in an error.
+
+Then, before writing the note, the archiver transcribes each part that has
+audio and no transcript. This is slow. On this Mac faster-whisper runs about
+7 times faster than real time, so an hour-long meeting takes about 9 minutes.
+The note says where its text came from: `local_transcription_model` in the
+frontmatter, `local_transcription_parts` too for a grouped note, and a
+`## Transcribed Locally` section. A local transcript has no speaker labels.
+superwhisper's summary is dropped, because it summarised nothing.
+
+Each local transcript is kept in the `local_transcripts` table, saved only
+once the note is committed. A note rewritten later, when a new recording joins
+its group, reuses it instead of transcribing again. A recording counts as
+transcribed even when faster-whisper found no speech in it, so a silent
+recording is not transcribed again on every run.
+
+Notes archived before the archiver could transcribe get the same treatment.
+A group stays pending while any of its recordings still needs a local
+transcript, so each old stub note is rewritten in place. The first run after
+the upgrade transcribes all of them, and can take a long time.
+
+The model loads from the Hugging Face cache (`~/.cache/huggingface/hub`)
+without going online, since the archiver runs exactly when the network is
+misbehaving. It downloads the model only when it is not cached yet, and that
+needs a network that reaches huggingface.co.
+
+### Stub notes
+
+A recording is archived as a **stub note** only when there is nothing to
+transcribe: the recording directory holds no audio, or faster-whisper found
+no speech in it either. A stub note has the usual frontmatter plus
+`transcription_failed: true`, and a body saying what happened and where the
+audio is: `output.wav` from 2.x, `output.ogg` from 3.0, whichever the
+recording directory actually holds. It keeps the record that the
+conversation happened, and because the note is committed, the recording is
+not retried forever.
 
 Grouping makes this partial rather than all-or-nothing: a short recording that
 transcribed is regularly grouped with a long one that did not. A note that
