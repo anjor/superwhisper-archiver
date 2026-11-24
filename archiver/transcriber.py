@@ -1,5 +1,3 @@
-"""Transcribes a recording's audio on this Mac when superwhisper could not."""
-
 from pathlib import Path
 from typing import Optional
 
@@ -9,7 +7,6 @@ from .models import LocalTranscript, Segment
 
 
 def audio_duration_ms(path: Path) -> int:
-    """How long an audio file runs, read from its container."""
     with av.open(str(path)) as container:
         if container.duration is None:
             raise ValueError(f"{path} does not say how long it is")
@@ -17,9 +14,7 @@ def audio_duration_ms(path: Path) -> int:
 
 
 class LocalTranscriber:
-    """Transcribes audio with faster-whisper.
-
-    Most runs transcribe nothing, so faster-whisper is imported and the model
+    """Most runs transcribe nothing, so faster-whisper is imported and the model
     loaded only when the first recording needs it.
     """
 
@@ -50,7 +45,6 @@ class LocalTranscriber:
 
         # Loading by name asks Hugging Face for the latest files before using
         # the cache, and this runs exactly when the network is misbehaving.
-        # Try the cache alone first, and go online only to download the model.
         try:
             return WhisperModel(
                 self.model, device="cpu", compute_type="int8", local_files_only=True

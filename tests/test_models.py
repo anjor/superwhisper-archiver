@@ -19,7 +19,6 @@ def test_archiver_config_from_dict():
 
 
 def test_config_without_local_transcription_still_loads():
-    """Configs written before local transcription existed keep working."""
     config = ArchiverConfig(
         superwhisper={"recordings_path": "/tmp/recordings"},
         archive={"repo_path": "/tmp/repo"},

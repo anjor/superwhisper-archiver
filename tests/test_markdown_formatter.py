@@ -253,11 +253,7 @@ def test_partly_failed_group_does_not_list_the_parts_that_worked():
     assert "1788338239/output.wav" not in md
 
 
-# --- Local transcription -----------------------------------------------
-
-
 def _locally_transcribed(**overrides) -> Recording:
-    """A recording superwhisper left empty, which the archiver transcribed itself."""
     empty = _failed_recording(
         audio_file="output.ogg",
         llmResult="Not enough was said in this meeting to summarize.",
@@ -301,7 +297,6 @@ def test_group_says_which_parts_were_transcribed_locally():
 
 
 def test_empty_local_transcript_still_reads_as_a_failed_transcription():
-    """Local transcription of silence finds nothing, and the note must say so."""
     silent = _failed_recording(audio_file="output.ogg").with_local_transcript(
         LocalTranscript(model="distil-large-v3")
     )

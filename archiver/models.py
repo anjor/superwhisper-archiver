@@ -16,8 +16,6 @@ class Segment(BaseModel):
 
 
 class LocalTranscript(BaseModel):
-    """The archiver's own transcript of a recording's audio, and the model that made it."""
-
     model: str
     segments: List[Segment] = Field(default_factory=list)
 
@@ -74,9 +72,6 @@ class Recording(BaseModel):
     # superwhisper 2.x saved output.wav and 3.0 saves output.ogg; some
     # recordings keep no audio at all.
     audio_file: Optional[str] = None
-    # The faster-whisper model that transcribed this recording on this Mac,
-    # set by the archiver when superwhisper returned no transcript. Never read
-    # from meta.json.
     local_transcription_model: Optional[str] = None
 
     class Config:
@@ -95,9 +90,7 @@ class Recording(BaseModel):
 
     @property
     def needs_local_transcription(self) -> bool:
-        """Whether the archiver should transcribe this recording's audio itself.
-
-        A recording already transcribed locally is done even if that came back
+        """A recording already transcribed locally is done even if that came back
         empty, or a silent recording would be transcribed again on every run.
         """
         return (
@@ -107,9 +100,7 @@ class Recording(BaseModel):
         )
 
     def with_local_transcript(self, transcript: LocalTranscript) -> "Recording":
-        """This recording with the archiver's transcript in place of superwhisper's.
-
-        superwhisper's summary is dropped: with no transcript, it summarised
+        """superwhisper's summary is dropped: with no transcript, it summarised
         nothing.
         """
         return self.model_copy(
@@ -264,8 +255,6 @@ class ArchiverConfig(BaseModel):
             return self.gap_seconds.get(mode.lower(), self.default_gap_seconds)
 
     class LocalTranscriptionConfig(BaseModel):
-        """The faster-whisper model used when superwhisper returns no transcript."""
-
         model: str = "distil-large-v3"
 
     class LoggingConfig(BaseModel):

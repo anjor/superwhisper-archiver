@@ -128,9 +128,6 @@ def test_failures_are_ordered_by_first_failure(tmp_path):
     assert [f["source_dir"] for f in tracker.get_failures()] == ["older", "newer"]
 
 
-# --- Local transcripts --------------------------------------------------
-
-
 def test_local_transcript_round_trips(tmp_path):
     tracker = StateTracker(str(tmp_path / "test.db"))
     transcript = LocalTranscript(

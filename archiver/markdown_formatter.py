@@ -148,7 +148,6 @@ class MarkdownFormatter:
         )
 
     def _build_local_notice(self, group: RecordingGroup) -> str:
-        """Say which text came from the archiver rather than from superwhisper."""
         if len(group.recordings) == 1:
             subject = "this recording"
         else:

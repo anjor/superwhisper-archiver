@@ -403,8 +403,6 @@ def test_scan_reports_abandoned_transcriptions(tmp_path):
     assert result.transcription_failed == 1
 
 
-# --- superwhisper offline ------------------------------------------------
-
 # What superwhisper 3.0 writes when it cannot reach its cloud API: the meeting
 # ends and gets a summary, but meta.json has no transcript and a duration of 0.
 # The audio is still on disk.
@@ -457,7 +455,6 @@ def test_unreadable_audio_leaves_the_duration_unknown(tmp_path):
 
 
 def test_summarised_meeting_with_no_transcript_is_complete_at_once():
-    """The summary marks the end of a meeting even when nothing was transcribed."""
     rec = _recording(**{**OFFLINE_MEETING_META, "duration": 70000}, meta_mtime=1000.0)
     assert is_complete(rec, now=1000.0 + 5)
 

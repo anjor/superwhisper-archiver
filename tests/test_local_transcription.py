@@ -1,5 +1,3 @@
-"""Transcribing on this Mac what superwhisper finished without a transcript."""
-
 import json
 import os
 import shutil
@@ -84,11 +82,7 @@ def _archive(group, notes, tracker, transcribe, dry_run=False):
     )
 
 
-# --- Selection ----------------------------------------------------------
-
-
 def test_archived_note_without_a_transcript_is_rewritten_until_transcribed(tracker):
-    """An existing stub note is picked up again, and left alone once transcribed."""
     group = RecordingGroup(recordings=[_offline()])
     archived = {"1795000000"}
     assert select_pending([group], FILTERS, archived) == [group]
@@ -102,7 +96,6 @@ def test_archived_note_without_a_transcript_is_rewritten_until_transcribed(track
 
 
 def test_archived_note_without_audio_is_left_alone():
-    """With nothing to transcribe, the stub note is the final word."""
     group = RecordingGroup(recordings=[_offline(audio_file=None)])
     assert select_pending([group], FILTERS, {"1795000000"}) == []
 
@@ -119,9 +112,6 @@ def test_cached_transcript_never_replaces_one_from_superwhisper(tracker):
     )
     rec = _offline(result="superwhisper's text", rawResult="superwhisper's text")
     assert with_cached_transcripts([rec], tracker) == [rec]
-
-
-# --- Archiving ----------------------------------------------------------
 
 
 def test_archive_writes_the_local_transcript_into_the_note(notes, tracker):
@@ -142,7 +132,6 @@ def test_archive_writes_the_local_transcript_into_the_note(notes, tracker):
 
 
 def test_failed_commit_saves_no_transcript(notes, tracker):
-    """Otherwise the recording would count as transcribed and never get its note."""
     fresh_lock = notes / ".git" / "index.lock"
     fresh_lock.write_text("")
     transcribe = FakeTranscribe()
@@ -193,9 +182,6 @@ def test_silent_recording_keeps_its_failure_notice_and_is_not_retried(notes, tra
     assert select_pending([next_run], FILTERS, tracker.get_archived_source_dirs()) == []
 
 
-# --- Whole runs ---------------------------------------------------------
-
-
 def _write_silence(path: Path, seconds: int = 70, rate: int = 8000):
     with wave.open(str(path), "wb") as audio:
         audio.setnchannels(1)
@@ -215,7 +201,6 @@ def _recording_dir(recordings: Path, source_dir: str, meta: dict) -> Path:
 
 
 def test_two_runs_transcribe_each_recording_once(tmp_path, monkeypatch):
-    """Today's offline meeting is archived, and an old stub note is rewritten in place."""
     recordings = tmp_path / "recordings"
     offline = _recording_dir(recordings, "1795000000", OFFLINE_META)
     stub = _recording_dir(

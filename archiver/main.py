@@ -180,9 +180,7 @@ def select_pending(
     filters: ArchiverConfig.FiltersConfig,
     archived: Set[str],
 ) -> List[RecordingGroup]:
-    """The qualifying groups whose note needs writing or rewriting.
-
-    A group is done only when all of its recordings are archived, so a new
+    """A group is done only when all of its recordings are archived, so a new
     recording joining an archived group rewrites the note to include it. So
     does a recording that still needs a local transcript, which is how a note
     archived without a transcript gets one.
@@ -201,11 +199,6 @@ def select_pending(
 def with_cached_transcripts(
     recordings: List[Recording], state_tracker: StateTracker
 ) -> List[Recording]:
-    """Fill in the archiver's own transcripts where superwhisper left none.
-
-    A note rewritten later, as when a new recording joins its group, then
-    keeps its text without transcribing the audio again.
-    """
     cached = state_tracker.get_local_transcripts(
         r.source_dir for r in recordings if not r.has_transcript
     )

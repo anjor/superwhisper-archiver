@@ -56,7 +56,7 @@ class StateTracker:
             """)
             # Transcripts the archiver made itself, kept so that rewriting a
             # note, as when a new recording joins its group, does not mean
-            # transcribing the audio again. segments is a JSON array.
+            # transcribing the audio again.
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS local_transcripts (
                     source_dir TEXT PRIMARY KEY,
@@ -184,7 +184,6 @@ class StateTracker:
             conn.commit()
 
     def get_local_transcripts(self, source_dirs) -> Dict[str, LocalTranscript]:
-        """The archiver's own transcripts of these recordings, by source_dir."""
         source_dirs = list(source_dirs)
         if not source_dirs:
             return {}
