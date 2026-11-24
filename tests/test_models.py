@@ -1,3 +1,7 @@
+from pathlib import Path
+
+import yaml
+
 from archiver.models import ArchiverConfig, Recording, ArchiveResult, ArchiveSummary
 
 
@@ -12,6 +16,23 @@ def test_archiver_config_from_dict():
     assert config.superwhisper.recordings_path == "/tmp/recordings"
     assert config.archive.repo_path == "/tmp/repo"
     assert config.filters.modes == ["meeting"]
+
+
+def test_config_without_local_transcription_still_loads():
+    """Configs written before local transcription existed keep working."""
+    config = ArchiverConfig(
+        superwhisper={"recordings_path": "/tmp/recordings"},
+        archive={"repo_path": "/tmp/repo"},
+        filters={},
+        logging={},
+    )
+    assert config.local_transcription.model == "distil-large-v3"
+
+
+def test_repo_config_loads():
+    with open(Path(__file__).parent.parent / "config.yaml") as f:
+        config = ArchiverConfig(**yaml.safe_load(f))
+    assert config.local_transcription.model == "distil-large-v3"
 
 
 def test_recording_from_meta_json():
